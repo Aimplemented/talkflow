@@ -528,8 +528,10 @@ class HotkeyRecorderDialog:
     def __init__(self, parent: tk.Tk, current_hotkey: str, on_save: Callable[[str], None]):
         self._on_save = on_save
         self._pressed_keys: Set[str] = set()
+        self._peak_keys: Set[str] = set()  # Track the maximum combo pressed
         self._recorded_combo: str = ""
         self._listener = None
+        self._finalized = False  # Prevent re-finalization
 
         # Create toplevel dialog
         self.dialog = tk.Toplevel(parent)
@@ -598,13 +600,18 @@ class HotkeyRecorderDialog:
             name = _key_name(key)
             if name:
                 self._pressed_keys.add(name)
+                # Track the peak (maximum) combo - more keys = better combo
+                if len(self._pressed_keys) > len(self._peak_keys):
+                    self._peak_keys = self._pressed_keys.copy()
+                    self._finalized = False  # New peak, allow re-finalization
                 self._update_display()
 
         def on_release(key):
             name = _key_name(key)
-            if name and name in self._pressed_keys:
-                # When a key is released, finalize the combo if we have keys
-                if self._pressed_keys:
+            if name:
+                self._pressed_keys.discard(name)
+                # Finalize when all keys are released (use the peak combo)
+                if not self._pressed_keys and self._peak_keys and not self._finalized:
                     self._finalize_combo()
 
         self._listener = keyboard.Listener(on_press=on_press, on_release=on_release)
@@ -612,16 +619,18 @@ class HotkeyRecorderDialog:
         self._listener.start()
 
     def _update_display(self):
-        """Update the display with currently pressed keys."""
-        if not self._pressed_keys:
+        """Update the display with the peak combo being recorded."""
+        # Show the peak combo (maximum keys pressed), not just currently held
+        display_keys = self._peak_keys if self._peak_keys else self._pressed_keys
+        if not display_keys:
             self.combo_var.set("Press any key combo...")
             return
 
         # Sort keys: modifiers first, then regular keys
         modifiers = {"ctrl_l", "ctrl_r", "ctrl", "alt_l", "alt_r", "alt",
                      "shift", "shift_l", "shift_r", "cmd", "cmd_l", "cmd_r"}
-        mods = sorted([k for k in self._pressed_keys if k in modifiers])
-        others = sorted([k for k in self._pressed_keys if k not in modifiers])
+        mods = sorted([k for k in display_keys if k in modifiers])
+        others = sorted([k for k in display_keys if k not in modifiers])
 
         # Normalize display names
         display_parts = []
@@ -635,16 +644,16 @@ class HotkeyRecorderDialog:
         self.combo_var.set(display_str)
 
     def _finalize_combo(self):
-        """Finalize the recorded combo when keys are released."""
-        if not self._pressed_keys:
+        """Finalize the recorded combo using the peak keys pressed."""
+        if not self._peak_keys:
             return
 
-        # Build the hotkey string for config
+        # Build the hotkey string for config using the peak combo
         modifiers_order = ["ctrl", "alt", "shift", "cmd"]
         mods_found = []
         others = []
 
-        for key in self._pressed_keys:
+        for key in self._peak_keys:
             normalized = key.replace("_l", "").replace("_r", "")
             if normalized in modifiers_order:
                 if normalized not in mods_found:
@@ -657,7 +666,7 @@ class HotkeyRecorderDialog:
         combo_parts = mods_sorted + sorted(others)
 
         self._recorded_combo = "+".join(combo_parts)
-        self._pressed_keys.clear()
+        self._finalized = True  # Mark as finalized to prevent re-recording
 
         # Update UI
         self.status_var.set(f"Recorded: {self._recorded_combo}")
@@ -667,7 +676,9 @@ class HotkeyRecorderDialog:
     def _clear_combo(self):
         """Clear the recorded combo and restart listening."""
         self._pressed_keys.clear()
+        self._peak_keys.clear()
         self._recorded_combo = ""
+        self._finalized = False
         self.combo_var.set("Press any key combo...")
         self.status_var.set("Listening for keys...")
         self.status_label.config(foreground="orange")
