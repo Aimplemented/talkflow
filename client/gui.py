@@ -301,14 +301,51 @@ class SystemTrayManager:
     def __init__(
         self,
         on_show: Callable[[], None],
-        on_settings: Callable[[], None],
+        on_toggle: Callable[[], None],
         on_exit: Callable[[], None],
     ):
         self._on_show = on_show
-        self._on_settings = on_settings
+        self._on_toggle = on_toggle
         self._on_exit = on_exit
         self._icon: Optional[pystray.Icon] = None
         self._is_recording = False
+
+    def _load_icon_image(self, recording: bool = False):
+        """Load icon from file or generate fallback."""
+        # Try to load logo.ico or logo PNG
+        icon_path = ASSETS_DIR / "logo.ico"
+        png_path = ASSETS_DIR / "logo-64x64.png"
+
+        try:
+            if icon_path.exists():
+                img = Image.open(icon_path)
+                # Apply red tint if recording
+                if recording:
+                    img = img.convert("RGBA")
+                    # Simple red tint for recording state
+                    pixels = img.load()
+                    for y in range(img.height):
+                        for x in range(img.width):
+                            r, g, b, a = pixels[x, y]
+                            if a > 0:  # Only modify non-transparent pixels
+                                pixels[x, y] = (min(255, r + 100), g // 2, b // 2, a)
+                return img
+            elif png_path.exists():
+                img = Image.open(png_path)
+                if recording:
+                    img = img.convert("RGBA")
+                    pixels = img.load()
+                    for y in range(img.height):
+                        for x in range(img.width):
+                            r, g, b, a = pixels[x, y]
+                            if a > 0:
+                                pixels[x, y] = (min(255, r + 100), g // 2, b // 2, a)
+                return img
+        except Exception as e:
+            log.debug("Could not load tray icon: %s", e)
+
+        # Fallback to generated icon
+        return _create_tray_icon_image(recording=recording)
 
     def start(self) -> None:
         """Start the system tray icon in a background thread."""
@@ -319,14 +356,14 @@ class SystemTrayManager:
         def _run_tray():
             menu = pystray.Menu(
                 pystray.MenuItem("Show", self._on_show, default=True),
-                pystray.MenuItem("Settings", self._on_settings),
+                pystray.MenuItem("Start/Stop", self._on_toggle),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Quit", self._on_exit),
             )
 
             self._icon = pystray.Icon(
                 "TalkFlow",
-                _create_tray_icon_image(),
+                self._load_icon_image(),
                 "TalkFlow - Ready",
                 menu,
             )
@@ -351,7 +388,7 @@ class SystemTrayManager:
 
         self._is_recording = recording
         try:
-            self._icon.icon = _create_tray_icon_image(recording=recording)
+            self._icon.icon = self._load_icon_image(recording=recording)
             self._icon.title = f"TalkFlow - {status}"
         except Exception as e:
             log.debug("Error updating tray icon: %s", e)
@@ -1094,7 +1131,7 @@ class TalkFlowGUI:
         """Initialize system tray icon and callbacks."""
         self._tray_manager = SystemTrayManager(
             on_show=self._show_window,
-            on_settings=self._show_window,  # Show window for settings
+            on_toggle=self._toggle_service,
             on_exit=self._exit_app,
         )
         self._tray_manager.start()
@@ -1354,6 +1391,10 @@ class TalkFlowGUI:
             self.server_entry.config(state="disabled")
             self.mic_combo.config(state="disabled")
             self.hotkey_entry.config(state="disabled")
+
+            # Auto-minimize to tray when started (runs in background)
+            if TRAY_AVAILABLE and self._tray_manager:
+                self.root.after(500, self._hide_to_tray)
 
         except Exception as e:
             self._log(f"✗ Failed to start: {e}")
