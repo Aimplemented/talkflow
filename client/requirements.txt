@@ -1,0 +1,23 @@
+# TalkFlow Client Dependencies
+# =============================
+# Install with: pip install -r requirements.txt
+
+# Audio capture (choose one)
+sounddevice>=0.4.6      # Cross-platform audio I/O (recommended)
+# pyaudio>=0.2.14       # Alternative: requires portaudio system library
+
+# Audio processing
+numpy>=1.24.0           # Required by sounddevice
+
+# Network communication
+websockets>=13.0        # WebSocket client for server communication
+
+# Input handling
+pynput>=1.7.6           # Global hotkey listener (cross-platform)
+
+# GUI components (optional, for gui.py)
+pystray>=0.19.5         # System tray icon support
+Pillow>=10.0.0          # Image processing for tray icon
+
+# Build tools (development only)
+# pyinstaller>=6.0.0    # For building standalone executables
