@@ -865,6 +865,9 @@ class TalkFlowGUI:
         self.root.geometry("520x700")
         self.root.resizable(False, False)
 
+        # Set window icon (taskbar and title bar)
+        self._set_window_icon()
+
         # Prevent the GUI from stealing focus when possible
         if platform.system() == "Windows":
             # Make the window not steal focus on click-through
@@ -895,6 +898,24 @@ class TalkFlowGUI:
 
         # Handle minimize button - hide to tray instead of taskbar
         self.root.bind("<Unmap>", self._on_minimize)
+
+    def _set_window_icon(self):
+        """Set the window icon for taskbar and title bar."""
+        icon_path = ASSETS_DIR / "logo.ico"
+        png_path = ASSETS_DIR / "logo-256x256.png"
+
+        try:
+            if platform.system() == "Windows" and icon_path.exists():
+                # Windows: use .ico file
+                self.root.iconbitmap(str(icon_path))
+            elif png_path.exists():
+                # Linux/macOS: use PNG with PhotoImage
+                from PIL import Image, ImageTk
+                img = Image.open(png_path)
+                self._icon_photo = ImageTk.PhotoImage(img)
+                self.root.iconphoto(True, self._icon_photo)
+        except Exception as e:
+            log.debug("Could not set window icon: %s", e)
 
     def _build_ui(self):
         root = self.root
