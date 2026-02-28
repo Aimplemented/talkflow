@@ -23,7 +23,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Optional, Callable
+from typing import Optional, Callable, Set
 
 import tkinter as tk
 from tkinter import ttk, messagebox
@@ -403,6 +403,193 @@ def _restore_foreground_window(hwnd):
 
 
 # ---------------------------------------------------------------------------
+# Hotkey Recorder Dialog
+# ---------------------------------------------------------------------------
+def _key_name(key) -> str | None:
+    """Extract key name from pynput key object."""
+    try:
+        return key.name.lower()
+    except AttributeError:
+        pass
+    try:
+        if key.char is not None:
+            return key.char.lower()
+    except AttributeError:
+        pass
+    return None
+
+
+class HotkeyRecorderDialog:
+    """Dialog for recording custom hotkey combinations."""
+
+    def __init__(self, parent: tk.Tk, current_hotkey: str, on_save: Callable[[str], None]):
+        self._on_save = on_save
+        self._pressed_keys: Set[str] = set()
+        self._recorded_combo: str = ""
+        self._listener = None
+
+        # Create toplevel dialog
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title("Record Hotkey")
+        self.dialog.geometry("400x220")
+        self.dialog.resizable(False, False)
+        self.dialog.transient(parent)
+        self.dialog.grab_set()
+
+        # Center on parent
+        self.dialog.update_idletasks()
+        x = parent.winfo_x() + (parent.winfo_width() - 400) // 2
+        y = parent.winfo_y() + (parent.winfo_height() - 220) // 2
+        self.dialog.geometry(f"+{x}+{y}")
+
+        self._build_ui(current_hotkey)
+        self.dialog.protocol("WM_DELETE_WINDOW", self._on_cancel)
+
+    def _build_ui(self, current_hotkey: str):
+        frame = ttk.Frame(self.dialog, padding=20)
+        frame.pack(fill="both", expand=True)
+
+        # Current hotkey display
+        ttk.Label(frame, text="Current hotkey:", font=("Segoe UI", 10)).pack(anchor="w")
+        ttk.Label(frame, text=current_hotkey.upper(), font=("Segoe UI", 12, "bold"),
+                  foreground="gray").pack(anchor="w", pady=(0, 15))
+
+        # Instructions
+        ttk.Label(frame, text="Press the key combination you want to use:",
+                  font=("Segoe UI", 10)).pack(anchor="w")
+
+        # Recording display
+        self.combo_var = tk.StringVar(value="Press any key combo...")
+        self.combo_label = ttk.Label(frame, textvariable=self.combo_var,
+                                      font=("Segoe UI", 16, "bold"),
+                                      foreground="blue")
+        self.combo_label.pack(pady=15)
+
+        # Status
+        self.status_var = tk.StringVar(value="Listening for keys...")
+        self.status_label = ttk.Label(frame, textvariable=self.status_var,
+                                       font=("Segoe UI", 9), foreground="orange")
+        self.status_label.pack()
+
+        # Buttons
+        btn_frame = ttk.Frame(frame)
+        btn_frame.pack(fill="x", pady=(15, 0))
+
+        self.save_btn = ttk.Button(btn_frame, text="Save", command=self._on_confirm,
+                                    state="disabled")
+        self.save_btn.pack(side="right", padx=(5, 0))
+
+        ttk.Button(btn_frame, text="Cancel", command=self._on_cancel).pack(side="right")
+
+        self.clear_btn = ttk.Button(btn_frame, text="Clear", command=self._clear_combo)
+        self.clear_btn.pack(side="left")
+
+        # Start listening
+        self._start_listener()
+
+    def _start_listener(self):
+        """Start the keyboard listener to capture key combinations."""
+        from pynput import keyboard
+
+        def on_press(key):
+            name = _key_name(key)
+            if name:
+                self._pressed_keys.add(name)
+                self._update_display()
+
+        def on_release(key):
+            name = _key_name(key)
+            if name and name in self._pressed_keys:
+                # When a key is released, finalize the combo if we have keys
+                if self._pressed_keys:
+                    self._finalize_combo()
+
+        self._listener = keyboard.Listener(on_press=on_press, on_release=on_release)
+        self._listener.daemon = True
+        self._listener.start()
+
+    def _update_display(self):
+        """Update the display with currently pressed keys."""
+        if not self._pressed_keys:
+            self.combo_var.set("Press any key combo...")
+            return
+
+        # Sort keys: modifiers first, then regular keys
+        modifiers = {"ctrl_l", "ctrl_r", "ctrl", "alt_l", "alt_r", "alt",
+                     "shift", "shift_l", "shift_r", "cmd", "cmd_l", "cmd_r"}
+        mods = sorted([k for k in self._pressed_keys if k in modifiers])
+        others = sorted([k for k in self._pressed_keys if k not in modifiers])
+
+        # Normalize display names
+        display_parts = []
+        for k in mods + others:
+            display = k.replace("_l", "").replace("_r", "").upper()
+            if display == "CMD":
+                display = "WIN" if platform.system() == "Windows" else "CMD"
+            display_parts.append(display)
+
+        display_str = " + ".join(display_parts)
+        self.combo_var.set(display_str)
+
+    def _finalize_combo(self):
+        """Finalize the recorded combo when keys are released."""
+        if not self._pressed_keys:
+            return
+
+        # Build the hotkey string for config
+        modifiers_order = ["ctrl", "alt", "shift", "cmd"]
+        mods_found = []
+        others = []
+
+        for key in self._pressed_keys:
+            normalized = key.replace("_l", "").replace("_r", "")
+            if normalized in modifiers_order:
+                if normalized not in mods_found:
+                    mods_found.append(normalized)
+            else:
+                others.append(key)
+
+        # Sort modifiers in standard order
+        mods_sorted = [m for m in modifiers_order if m in mods_found]
+        combo_parts = mods_sorted + sorted(others)
+
+        self._recorded_combo = "+".join(combo_parts)
+        self._pressed_keys.clear()
+
+        # Update UI
+        self.status_var.set(f"Recorded: {self._recorded_combo}")
+        self.status_label.config(foreground="green")
+        self.save_btn.config(state="normal")
+
+    def _clear_combo(self):
+        """Clear the recorded combo and restart listening."""
+        self._pressed_keys.clear()
+        self._recorded_combo = ""
+        self.combo_var.set("Press any key combo...")
+        self.status_var.set("Listening for keys...")
+        self.status_label.config(foreground="orange")
+        self.save_btn.config(state="disabled")
+
+    def _on_confirm(self):
+        """Save the recorded hotkey and close."""
+        if self._recorded_combo:
+            self._on_save(self._recorded_combo)
+        self._cleanup()
+        self.dialog.destroy()
+
+    def _on_cancel(self):
+        """Cancel and close the dialog."""
+        self._cleanup()
+        self.dialog.destroy()
+
+    def _cleanup(self):
+        """Stop the keyboard listener."""
+        if self._listener:
+            self._listener.stop()
+            self._listener = None
+
+
+# ---------------------------------------------------------------------------
 # Hotkey test
 # ---------------------------------------------------------------------------
 class HotkeyTester:
@@ -573,6 +760,10 @@ class TalkFlowGUI:
         self.test_hk_btn = ttk.Button(row5, text="⌨ Test Hotkey",
                                        command=self._test_hotkey)
         self.test_hk_btn.pack(side="left")
+
+        self.record_hk_btn = ttk.Button(row5, text="🎹 Record Hotkey",
+                                         command=self._record_hotkey)
+        self.record_hk_btn.pack(side="left", padx=(10, 0))
 
         self.hotkey_status = ttk.Label(hk_frame, text="", font=("Segoe UI", 9))
         self.hotkey_status.pack(fill="x", pady=(5, 0))
@@ -819,6 +1010,47 @@ class TalkFlowGUI:
                 text="✗ Not detected — try F9, F10, or F8",
                 foreground="red")
             self._log("✗ Hotkey not detected")
+
+    def _record_hotkey(self):
+        """Open the hotkey recorder dialog."""
+        current = self.hotkey_var.get().strip() or "f9"
+
+        def on_save(new_hotkey: str):
+            self.hotkey_var.set(new_hotkey)
+            self._apply_recorded_hotkey(new_hotkey)
+
+        HotkeyRecorderDialog(self.root, current, on_save)
+
+    def _apply_recorded_hotkey(self, new_hotkey: str):
+        """Apply the new hotkey: save to config and reload listener if running."""
+        # Update config
+        self.config["hotkey"] = new_hotkey
+        save_config(self.config)
+        self._log(f"Hotkey changed to: {new_hotkey}")
+        self.hotkey_status.config(text=f"✓ Saved: {new_hotkey}", foreground="green")
+
+        # Reload hotkey listener if service is running
+        if self.is_running:
+            self._reload_hotkey(new_hotkey)
+
+    def _reload_hotkey(self, new_hotkey: str):
+        """Reload the hotkey listener with a new hotkey without restarting the service."""
+        from hotkey_listener import HotkeyListener
+
+        # Stop the old listener
+        if hasattr(self, "_listener") and self._listener:
+            self._listener.stop()
+            self._log("Hotkey listener stopped for reload")
+
+        # Create and start a new listener with the new hotkey
+        self._listener = HotkeyListener(
+            hotkey=new_hotkey,
+            on_press_start=self._on_hold_start,
+            on_press_stop=self._on_hold_stop,
+            mode="push-to-talk",
+        )
+        self._listener.start()
+        self._log(f"Hotkey listener reloaded — now using: {new_hotkey}")
 
     # ------------------------------------------------------------------
     # Save
