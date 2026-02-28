@@ -1,0 +1,8 @@
+# WhisperFlow Server — Python dependencies
+# Install inside the Docker container via pip (see Dockerfile)
+
+faster-whisper>=1.1.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.34.0
+numpy>=1.26.0
+websockets>=13.0

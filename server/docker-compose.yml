@@ -1,0 +1,81 @@
+# WhisperFlow — docker-compose.yml (Card 2)
+# Deploy on DGX Spark with: docker compose up -d --build
+#
+# First run: faster-whisper will download the large-v3 model (~3 GB) from
+# HuggingFace and cache it in the ./model-cache volume.  Subsequent starts
+# are instant because the volume persists across rebuilds.
+#
+# Verify GPU access after startup:
+#   docker compose exec whisperflow-server nvidia-smi
+#   curl http://localhost:9876/health
+
+services:
+  whisperflow-server:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: whisperflow-server:latest
+    container_name: whisperflow-server
+    restart: unless-stopped
+
+    # -----------------------------------------------------------------------
+    # Port binding — accessible from Deskflow client machines on LAN
+    # -----------------------------------------------------------------------
+    ports:
+      - "9876:9876"
+
+    # -----------------------------------------------------------------------
+    # NVIDIA GPU access
+    # -----------------------------------------------------------------------
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+    # -----------------------------------------------------------------------
+    # Environment variables (override here or in a .env file)
+    # -----------------------------------------------------------------------
+    environment:
+      WHISPER_MODEL: "${WHISPER_MODEL:-large-v3}"
+      WHISPER_DEVICE: "${WHISPER_DEVICE:-cpu}"
+      WHISPER_COMPUTE: "${WHISPER_COMPUTE:-float32}"
+      WHISPER_BEAM_SIZE: "${WHISPER_BEAM_SIZE:-5}"
+      WHISPER_LANGUAGE: "${WHISPER_LANGUAGE:-en}"
+      SERVER_PORT: "${SERVER_PORT:-9876}"
+      # Make all GPU devices visible inside the container
+      NVIDIA_VISIBLE_DEVICES: all
+      NVIDIA_DRIVER_CAPABILITIES: compute,utility
+
+    # -----------------------------------------------------------------------
+    # Volume — persist HuggingFace model cache across container rebuilds
+    # -----------------------------------------------------------------------
+    volumes:
+      - model-cache:/cache/huggingface
+
+    # -----------------------------------------------------------------------
+    # Health check (mirrors Dockerfile HEALTHCHECK for compose awareness)
+    # -----------------------------------------------------------------------
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9876/health"]
+      interval: 30s
+      timeout: 10s
+      start_period: 120s
+      retries: 3
+
+    # -----------------------------------------------------------------------
+    # Logging
+    # -----------------------------------------------------------------------
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"
+        max-file: "5"
+
+# Named volume keeps model data even after `docker compose down`
+# Use `docker compose down -v` only if you want to re-download the model.
+volumes:
+  model-cache:
+    driver: local
