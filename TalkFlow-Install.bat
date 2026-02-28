@@ -32,7 +32,7 @@ echo.
 :: 3. Copy files
 echo [3/5] Copying files...
 set "SRC=%~dp0client"
-for %%f in (client.py audio_capture.py hotkey_listener.py keystroke_injector.py gui.py) do (
+for %%f in (client.py audio_capture.py hotkey_listener.py keystroke_injector.py gui.py text_processor.py) do (
     if exist "%SRC%\%%f" (
         copy /y "%SRC%\%%f" "%TF_DIR%\client\%%f" >nul
         echo   %%f
@@ -51,8 +51,16 @@ echo [4/5] Installing dependencies (this may take a minute)...
 python -m venv "%TF_DIR%\client\.venv"
 call "%TF_DIR%\client\.venv\Scripts\activate.bat"
 pip install --quiet --upgrade pip
-pip install --quiet "websockets>=13.0" "pynput>=1.7.6" "sounddevice>=0.4.6" "numpy>=1.26"
+pip install --quiet "websockets>=13.0" "pynput>=1.7.6" "sounddevice>=0.4.6" "numpy>=1.26" "pystray>=0.19" "Pillow>=10.0"
 echo   OK
+echo.
+
+:: Copy assets
+if exist "%SRC%\assets" (
+    if not exist "%TF_DIR%\client\assets" mkdir "%TF_DIR%\client\assets"
+    xcopy /y /q "%SRC%\assets\*" "%TF_DIR%\client\assets\" >nul 2>&1
+    echo   assets copied
+)
 echo.
 
 :: 5. Create launcher and config
