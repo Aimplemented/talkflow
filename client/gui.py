@@ -1642,13 +1642,17 @@ class TalkFlowGUI:
 
     def _transcribe_groq(self, audio_bytes: bytes) -> dict:
         """Transcribe using Groq Cloud API."""
-        from groq_transcribe import transcribe_audio
+        try:
+            from groq_transcriber import GroqTranscriber
+        except ImportError:
+            return {"error": "groq_transcriber module not found", "text": "", "process_time": 0}
 
         api_key = self.config.get("groq_api_key", "")
         if not api_key:
             return {"error": "Groq API key not configured", "text": "", "process_time": 0}
 
-        return transcribe_audio(audio_bytes, api_key)
+        transcriber = GroqTranscriber(api_key=api_key)
+        return transcriber.transcribe(audio_bytes)
 
     def _transcribe_server(self, audio_bytes: bytes) -> dict:
         """Transcribe using self-hosted WebSocket server."""
