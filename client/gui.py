@@ -129,6 +129,136 @@ def save_config(cfg: dict) -> None:
 
 
 # ---------------------------------------------------------------------------
+# System Tray Support
+# ---------------------------------------------------------------------------
+def _create_tray_icon_image(size: int = 64, recording: bool = False) -> "Image.Image":
+    """Create a simple microphone icon for the system tray."""
+    if not TRAY_AVAILABLE:
+        return None
+
+    # Create image with transparent background
+    image = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(image)
+
+    # Colors
+    if recording:
+        main_color = (220, 50, 50, 255)   # Red when recording
+    else:
+        main_color = (70, 130, 180, 255)  # Steel blue normally
+
+    # Draw microphone body (rounded rectangle)
+    mic_left = size * 0.3
+    mic_right = size * 0.7
+    mic_top = size * 0.1
+    mic_bottom = size * 0.55
+    draw.rounded_rectangle(
+        [mic_left, mic_top, mic_right, mic_bottom],
+        radius=size * 0.15,
+        fill=main_color
+    )
+
+    # Draw microphone stand arc
+    arc_left = size * 0.2
+    arc_right = size * 0.8
+    arc_top = size * 0.35
+    arc_bottom = size * 0.75
+    draw.arc(
+        [arc_left, arc_top, arc_right, arc_bottom],
+        start=0, end=180,
+        fill=main_color,
+        width=max(2, size // 16)
+    )
+
+    # Draw stand pole
+    pole_x = size * 0.5
+    pole_top = size * 0.75
+    pole_bottom = size * 0.9
+    draw.line(
+        [(pole_x, pole_top), (pole_x, pole_bottom)],
+        fill=main_color,
+        width=max(2, size // 16)
+    )
+
+    # Draw base
+    base_left = size * 0.35
+    base_right = size * 0.65
+    base_y = size * 0.9
+    draw.line(
+        [(base_left, base_y), (base_right, base_y)],
+        fill=main_color,
+        width=max(2, size // 16)
+    )
+
+    return image
+
+
+class SystemTrayManager:
+    """Manages the system tray icon and menu."""
+
+    def __init__(
+        self,
+        on_show: Callable[[], None],
+        on_settings: Callable[[], None],
+        on_exit: Callable[[], None],
+        on_toggle: Callable[[], None],
+    ):
+        self._on_show = on_show
+        self._on_settings = on_settings
+        self._on_exit = on_exit
+        self._on_toggle = on_toggle
+        self._icon: Optional[pystray.Icon] = None
+        self._is_recording = False
+
+    def start(self) -> None:
+        """Start the system tray icon in a background thread."""
+        if not TRAY_AVAILABLE:
+            log.warning("System tray not available (pystray/PIL not installed)")
+            return
+
+        def _run_tray():
+            menu = pystray.Menu(
+                pystray.MenuItem("Show TalkFlow", self._on_show, default=True),
+                pystray.MenuItem("Start/Stop", self._on_toggle),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem("Settings", self._on_settings),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem("Exit", self._on_exit),
+            )
+
+            self._icon = pystray.Icon(
+                "TalkFlow",
+                _create_tray_icon_image(),
+                "TalkFlow - Ready",
+                menu,
+            )
+            self._icon.run()
+
+        threading.Thread(target=_run_tray, daemon=True).start()
+        log.info("System tray icon started")
+
+    def stop(self) -> None:
+        """Stop and remove the system tray icon."""
+        if self._icon:
+            try:
+                self._icon.stop()
+            except Exception as e:
+                log.debug("Error stopping tray icon: %s", e)
+            self._icon = None
+
+    def update_status(self, status: str, recording: bool = False) -> None:
+        """Update the tray icon tooltip and appearance."""
+        if not self._icon:
+            return
+
+        self._is_recording = recording
+        try:
+            self._icon.icon = _create_tray_icon_image(recording=recording)
+            self._icon.title = f"TalkFlow - {status}"
+        except Exception as e:
+            log.debug("Error updating tray icon: %s", e)
+
+
+# ---------------------------------------------------------------------------
 # Audio device enumeration
 # ---------------------------------------------------------------------------
 def list_microphones() -> list[dict]:
@@ -323,10 +453,12 @@ class TalkFlowGUI:
         self.is_running = False
         self.hotkey_tester = HotkeyTester()
         self._target_hwnd = None  # Window to inject text into
+        self._tray_manager: Optional[SystemTrayManager] = None
+        self._is_hidden = False
 
         self.root = tk.Tk()
         self.root.title("TalkFlow")
-        self.root.geometry("520x640")
+        self.root.geometry("520x700")
         self.root.resizable(False, False)
 
         # Prevent the GUI from stealing focus when possible
@@ -348,6 +480,13 @@ class TalkFlowGUI:
 
         self._build_ui()
         self._load_devices()
+
+        # Setup system tray (Windows only for now)
+        if platform.system() == "Windows" and TRAY_AVAILABLE:
+            self._setup_system_tray()
+
+        # Handle window close button
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
     def _build_ui(self):
         root = self.root
@@ -421,14 +560,14 @@ class TalkFlowGUI:
 
         presets = ttk.Frame(row4)
         presets.pack(side="left")
-        for label, combo in [("F9", "f9"), ("F10", "f10"), ("F8", "f8"),
-                              ("Ctrl+Shift+D", "ctrl+shift+d")]:
+        for label, combo in HOTKEY_PRESETS[:4]:  # Show first 4 presets
             btn = ttk.Button(presets, text=label, width=max(len(label) + 1, 5),
                               command=lambda c=combo: self.hotkey_var.set(c))
             btn.pack(side="left", padx=2)
 
-        ttk.Label(hk_frame, text="Hold the key to record, release to transcribe.",
-                  font=("Segoe UI", 9), foreground="gray").pack(fill="x", pady=(4, 0))
+        ttk.Label(hk_frame, text="Hold the key to record, release to transcribe. "
+                  "Supports any combo (e.g., ctrl+win, ctrl+alt+v).",
+                  font=("Segoe UI", 9), foreground="gray", wraplength=480).pack(fill="x", pady=(4, 0))
 
         row5 = ttk.Frame(hk_frame)
         row5.pack(fill="x", pady=(6, 0))
@@ -438,6 +577,45 @@ class TalkFlowGUI:
 
         self.hotkey_status = ttk.Label(hk_frame, text="", font=("Segoe UI", 9))
         self.hotkey_status.pack(fill="x", pady=(5, 0))
+
+        # === Preferences ===
+        pref_frame = ttk.LabelFrame(root, text="  Preferences  ", padding=10)
+        pref_frame.pack(fill="x", padx=15, pady=5)
+
+        # Row 1: Minimize to tray + Start minimized
+        pref_row1 = ttk.Frame(pref_frame)
+        pref_row1.pack(fill="x")
+
+        self.minimize_to_tray_var = tk.BooleanVar(
+            value=self.config.get("minimize_to_tray", True))
+        tray_check = ttk.Checkbutton(
+            pref_row1, text="Minimize to system tray",
+            variable=self.minimize_to_tray_var,
+            command=self._on_pref_change)
+        tray_check.pack(side="left")
+
+        if not TRAY_AVAILABLE:
+            tray_check.config(state="disabled")
+            ttk.Label(pref_row1, text="(requires pystray)",
+                      font=("Segoe UI", 8), foreground="gray").pack(side="left", padx=(5, 0))
+
+        self.play_sounds_var = tk.BooleanVar(
+            value=self.config.get("play_sounds", True))
+        ttk.Checkbutton(
+            pref_row1, text="Play sounds",
+            variable=self.play_sounds_var,
+            command=self._on_pref_change).pack(side="right")
+
+        # Row 2: Auto-start
+        pref_row2 = ttk.Frame(pref_frame)
+        pref_row2.pack(fill="x", pady=(4, 0))
+
+        self.auto_start_var = tk.BooleanVar(
+            value=self.config.get("auto_start_on_launch", False))
+        ttk.Checkbutton(
+            pref_row2, text="Auto-start on launch",
+            variable=self.auto_start_var,
+            command=self._on_pref_change).pack(side="left")
 
         # === Controls ===
         ttk.Separator(root, orient="horizontal").pack(fill="x", padx=15, pady=8)
@@ -466,6 +644,75 @@ class TalkFlowGUI:
         ts = time.strftime("%H:%M:%S")
         self.log_text.insert("end", f"[{ts}] {msg}\n")
         self.log_text.see("end")
+
+    # ------------------------------------------------------------------
+    # System Tray
+    # ------------------------------------------------------------------
+    def _setup_system_tray(self):
+        """Initialize system tray icon and callbacks."""
+        self._tray_manager = SystemTrayManager(
+            on_show=self._show_window,
+            on_settings=self._show_window,  # Show window for settings
+            on_exit=self._exit_app,
+            on_toggle=self._toggle_service,
+        )
+        self._tray_manager.start()
+
+    def _show_window(self):
+        """Show and bring window to front."""
+        self._is_hidden = False
+        self.root.after(0, lambda: (
+            self.root.deiconify(),
+            self.root.lift(),
+            self.root.focus_force(),
+        ))
+
+    def _hide_to_tray(self):
+        """Hide window to system tray."""
+        if not TRAY_AVAILABLE or not self._tray_manager:
+            return False
+        self._is_hidden = True
+        self.root.withdraw()
+        self._log("Minimized to system tray")
+        return True
+
+    def _on_close(self):
+        """Handle window close button - minimize to tray or exit."""
+        if (self.config.get("minimize_to_tray", True) and
+            TRAY_AVAILABLE and self._tray_manager):
+            self._hide_to_tray()
+        else:
+            self._exit_app()
+
+    def _exit_app(self):
+        """Clean shutdown - stop service, tray, and exit."""
+        self._log("Shutting down...")
+
+        # Stop the service if running
+        if self.is_running:
+            self._stop_service()
+
+        # Stop system tray
+        if self._tray_manager:
+            self._tray_manager.stop()
+
+        # Quit tkinter
+        self.root.after(100, self.root.quit)
+
+    def _update_tray_status(self, status: str, recording: bool = False):
+        """Update tray icon status."""
+        if self._tray_manager:
+            self._tray_manager.update_status(status, recording)
+
+    # ------------------------------------------------------------------
+    # Preferences
+    # ------------------------------------------------------------------
+    def _on_pref_change(self):
+        """Handle preference checkbox changes - auto-save."""
+        self.config["minimize_to_tray"] = self.minimize_to_tray_var.get()
+        self.config["play_sounds"] = self.play_sounds_var.get()
+        self.config["auto_start_on_launch"] = self.auto_start_var.get()
+        save_config(self.config)
 
     # ------------------------------------------------------------------
     # Devices
@@ -606,6 +853,7 @@ class TalkFlowGUI:
             self.is_running = True
             self.start_btn.config(text="⏹  Stop TalkFlow")
             self.status_label.config(text="● Ready", foreground="green")
+            self._update_tray_status("Ready")
             self._log(f"TalkFlow started — hold {self.config['hotkey']} to talk")
 
             self.server_entry.config(state="disabled")
@@ -629,6 +877,7 @@ class TalkFlowGUI:
         self._is_recording = False
         self.start_btn.config(text="▶  Start TalkFlow")
         self.status_label.config(text="● Stopped", foreground="gray")
+        self._update_tray_status("Stopped")
         self._log("TalkFlow stopped")
 
         self.server_entry.config(state="normal")
@@ -668,10 +917,11 @@ class TalkFlowGUI:
 
         self.root.after(0, lambda: self.status_label.config(
             text="● Recording...", foreground="red"))
+        self.root.after(0, lambda: self._update_tray_status("Recording...", recording=True))
         self.root.after(0, lambda: self._log("⏺ Hold to speak..."))
 
-        # Beep on Windows
-        if platform.system() == "Windows":
+        # Beep on Windows (if sounds enabled)
+        if platform.system() == "Windows" and self.config.get("play_sounds", True):
             try:
                 import winsound
                 threading.Thread(target=lambda: winsound.Beep(800, 100),
@@ -689,9 +939,10 @@ class TalkFlowGUI:
 
         self.root.after(0, lambda: self.status_label.config(
             text="● Transcribing...", foreground="orange"))
+        self.root.after(0, lambda: self._update_tray_status("Transcribing..."))
 
-        # Beep on Windows
-        if platform.system() == "Windows":
+        # Beep on Windows (if sounds enabled)
+        if platform.system() == "Windows" and self.config.get("play_sounds", True):
             try:
                 import winsound
                 threading.Thread(target=lambda: winsound.Beep(600, 100),
@@ -704,6 +955,7 @@ class TalkFlowGUI:
             self.root.after(0, lambda: self._log("⚠ Too short — skipped"))
             self.root.after(0, lambda: self.status_label.config(
                 text="● Ready", foreground="green"))
+            self.root.after(0, lambda: self._update_tray_status("Ready"))
             return
 
         duration_s = n_bytes / (16000 * 2)
@@ -748,6 +1000,7 @@ class TalkFlowGUI:
             self.root.after(0, lambda: self._log(f"✗ Connection error: {exc}"))
             self.root.after(0, lambda: self.status_label.config(
                 text="● Ready", foreground="green"))
+            self.root.after(0, lambda: self._update_tray_status("Ready"))
             return
 
         if response.get("type") == "error":
@@ -755,6 +1008,7 @@ class TalkFlowGUI:
             self.root.after(0, lambda: self._log(f"✗ Server error: {msg}"))
             self.root.after(0, lambda: self.status_label.config(
                 text="● Ready", foreground="green"))
+            self.root.after(0, lambda: self._update_tray_status("Ready"))
             return
 
         text = response.get("text", "").strip()
@@ -764,11 +1018,13 @@ class TalkFlowGUI:
             self.root.after(0, lambda: self._log("⚠ No speech detected"))
             self.root.after(0, lambda: self.status_label.config(
                 text="● Ready", foreground="green"))
+            self.root.after(0, lambda: self._update_tray_status("Ready"))
             return
 
         self.root.after(0, lambda: self._log(f"✓ [{proc_time:.2f}s] {text}"))
         self.root.after(0, lambda: self.status_label.config(
             text="● Ready", foreground="green"))
+        self.root.after(0, lambda: self._update_tray_status("Ready"))
 
         # Restore focus to the original window BEFORE injecting text
         _restore_foreground_window(target_hwnd)
@@ -788,6 +1044,16 @@ class TalkFlowGUI:
         self._log("TalkFlow ready — configure and press Start")
         self._log(f"Server: {self.config['server']}")
         self._log(f"Hotkey: {self.config['hotkey']} (push-to-talk)")
+
+        if TRAY_AVAILABLE:
+            self._log("System tray: enabled (close button minimizes to tray)")
+        else:
+            self._log("System tray: disabled (install pystray + pillow to enable)")
+
+        # Auto-start if configured
+        if self.config.get("auto_start_on_launch", False):
+            self.root.after(500, self._start_service)
+
         self.root.mainloop()
 
 
