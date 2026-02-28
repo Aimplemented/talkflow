@@ -590,6 +590,113 @@ class HotkeyRecorderDialog:
 
 
 # ---------------------------------------------------------------------------
+# Version and branding
+# ---------------------------------------------------------------------------
+VERSION = "2.0"
+ASSETS_DIR = Path(__file__).parent / "assets"
+
+
+# ---------------------------------------------------------------------------
+# About Dialog
+# ---------------------------------------------------------------------------
+class AboutDialog:
+    """Professional About dialog with logo and branding."""
+
+    def __init__(self, parent: tk.Tk):
+        self.dialog = tk.Toplevel(parent)
+        self.dialog.title("About TalkFlow")
+        self.dialog.geometry("420x480")
+        self.dialog.resizable(False, False)
+        self.dialog.transient(parent)
+        self.dialog.grab_set()
+
+        # Center on parent
+        self.dialog.update_idletasks()
+        x = parent.winfo_x() + (parent.winfo_width() - 420) // 2
+        y = parent.winfo_y() + (parent.winfo_height() - 480) // 2
+        self.dialog.geometry(f"+{x}+{y}")
+
+        self._build_ui()
+
+    def _build_ui(self):
+        # Main frame with padding
+        frame = ttk.Frame(self.dialog, padding=30)
+        frame.pack(fill="both", expand=True)
+
+        # Try to load logo
+        logo_loaded = False
+        try:
+            from PIL import Image, ImageTk
+            logo_path = ASSETS_DIR / "logo-128x128.png"
+            if logo_path.exists():
+                img = Image.open(logo_path)
+                self._logo_photo = ImageTk.PhotoImage(img)
+                logo_label = ttk.Label(frame, image=self._logo_photo)
+                logo_label.pack(pady=(0, 15))
+                logo_loaded = True
+        except ImportError:
+            pass
+
+        if not logo_loaded:
+            # Fallback: text-based logo
+            ttk.Label(frame, text="🎙", font=("Segoe UI", 48)).pack(pady=(0, 10))
+
+        # App name
+        ttk.Label(frame, text="TalkFlow",
+                  font=("Segoe UI", 24, "bold")).pack()
+
+        # Version
+        ttk.Label(frame, text=f"Version {VERSION}",
+                  font=("Segoe UI", 12), foreground="gray").pack(pady=(5, 20))
+
+        # Description
+        desc = ttk.Label(frame,
+                         text="Push-to-talk voice dictation.\n"
+                              "Hold your hotkey, speak, release —\n"
+                              "text appears wherever your cursor is.",
+                         font=("Segoe UI", 10),
+                         justify="center")
+        desc.pack(pady=(0, 20))
+
+        # Separator
+        ttk.Separator(frame, orient="horizontal").pack(fill="x", pady=10)
+
+        # Features
+        features_frame = ttk.Frame(frame)
+        features_frame.pack(fill="x", pady=10)
+
+        features = [
+            "Real-time speech transcription",
+            "Universal hotkey support",
+            "System tray integration",
+            "Automatic text injection",
+        ]
+        for feature in features:
+            ttk.Label(features_frame, text=f"  •  {feature}",
+                      font=("Segoe UI", 9), foreground="#0891b2").pack(anchor="w")
+
+        # Separator
+        ttk.Separator(frame, orient="horizontal").pack(fill="x", pady=15)
+
+        # AI branding
+        ai_frame = ttk.Frame(frame)
+        ai_frame.pack(pady=(5, 15))
+
+        ttk.Label(ai_frame, text="AI Implemented",
+                  font=("Segoe UI", 11, "bold"), foreground="#0d9488").pack()
+        ttk.Label(ai_frame, text="Built with Claude by Anthropic",
+                  font=("Segoe UI", 9), foreground="gray").pack()
+
+        # Copyright
+        ttk.Label(frame, text="© 2026 TalkFlow",
+                  font=("Segoe UI", 8), foreground="gray").pack(pady=(10, 0))
+
+        # Close button
+        ttk.Button(frame, text="Close", command=self.dialog.destroy,
+                   width=12).pack(pady=(15, 0))
+
+
+# ---------------------------------------------------------------------------
 # Hotkey test
 # ---------------------------------------------------------------------------
 class HotkeyTester:
@@ -682,6 +789,11 @@ class TalkFlowGUI:
         header.pack(fill="x", padx=15, pady=(15, 5))
         ttk.Label(header, text="🎙 TalkFlow",
                   font=("Segoe UI", 18, "bold")).pack(side="left")
+
+        # About button (small, unobtrusive)
+        self.about_btn = ttk.Button(header, text="ℹ", width=3,
+                                     command=self._show_about)
+        self.about_btn.pack(side="left", padx=(10, 0))
 
         self.status_label = ttk.Label(header, text="● Stopped", foreground="gray",
                                        font=("Segoe UI", 11))
@@ -834,6 +946,10 @@ class TalkFlowGUI:
         ts = time.strftime("%H:%M:%S")
         self.log_text.insert("end", f"[{ts}] {msg}\n")
         self.log_text.see("end")
+
+    def _show_about(self):
+        """Show the About dialog."""
+        AboutDialog(self.root)
 
     # ------------------------------------------------------------------
     # System Tray

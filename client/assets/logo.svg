@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <!-- Gradient for main icon -->
+    <linearGradient id="mainGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#0891b2;stop-opacity:1" />
+      <stop offset="50%" style="stop-color:#0d9488;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#14b8a6;stop-opacity:1" />
+    </linearGradient>
+
+    <!-- Gradient for waveform -->
+    <linearGradient id="waveGradient" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" style="stop-color:#06b6d4;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#2dd4bf;stop-opacity:1" />
+    </linearGradient>
+
+    <!-- Glow effect -->
+    <filter id="glow" x="-20%" y="-20%" width="140%" height="140%">
+      <feGaussianBlur stdDeviation="8" result="coloredBlur"/>
+      <feMerge>
+        <feMergeNode in="coloredBlur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+
+    <!-- Shadow -->
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="4" stdDeviation="6" flood-color="#0891b2" flood-opacity="0.3"/>
+    </filter>
+  </defs>
+
+  <!-- Background circle -->
+  <circle cx="256" cy="256" r="240" fill="url(#mainGradient)" filter="url(#shadow)"/>
+
+  <!-- Inner circle for depth -->
+  <circle cx="256" cy="256" r="200" fill="none" stroke="rgba(255,255,255,0.15)" stroke-width="2"/>
+
+  <!-- Speech bubble shape -->
+  <path d="M 140 180
+           Q 140 130 190 130
+           L 322 130
+           Q 372 130 372 180
+           L 372 280
+           Q 372 330 322 330
+           L 220 330
+           L 180 380
+           L 190 330
+           L 190 330
+           Q 140 330 140 280
+           Z"
+        fill="white"
+        opacity="0.95"
+        filter="url(#glow)"/>
+
+  <!-- Audio waveform bars inside speech bubble -->
+  <g fill="url(#waveGradient)">
+    <!-- Bar 1 -->
+    <rect x="170" y="210" width="14" height="60" rx="7" ry="7"/>
+    <!-- Bar 2 -->
+    <rect x="195" y="185" width="14" height="110" rx="7" ry="7"/>
+    <!-- Bar 3 -->
+    <rect x="220" y="165" width="14" height="150" rx="7" ry="7"/>
+    <!-- Bar 4 - center tallest -->
+    <rect x="245" y="150" width="14" height="180" rx="7" ry="7"/>
+    <!-- Bar 5 -->
+    <rect x="270" y="170" width="14" height="140" rx="7" ry="7"/>
+    <!-- Bar 6 -->
+    <rect x="295" y="190" width="14" height="100" rx="7" ry="7"/>
+    <!-- Bar 7 -->
+    <rect x="320" y="215" width="14" height="50" rx="7" ry="7"/>
+  </g>
+
+  <!-- Microphone icon at bottom -->
+  <g transform="translate(256, 420)" fill="white" opacity="0.9">
+    <!-- Mic body -->
+    <rect x="-18" y="-50" width="36" height="55" rx="18" ry="18"/>
+    <!-- Mic arc -->
+    <path d="M -30 -10 Q -30 30 0 30 Q 30 30 30 -10" fill="none" stroke="white" stroke-width="6" stroke-linecap="round"/>
+    <!-- Mic stand -->
+    <line x1="0" y1="30" x2="0" y2="50" stroke="white" stroke-width="6" stroke-linecap="round"/>
+    <line x1="-15" y1="50" x2="15" y2="50" stroke="white" stroke-width="6" stroke-linecap="round"/>
+  </g>
+</svg>
