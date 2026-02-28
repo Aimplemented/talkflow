@@ -9,8 +9,15 @@ Features:
   - Hotkey configuration + test (supports any key combo including Ctrl+Win)
   - Server connection test
   - Push-to-talk dictation
-  - System tray support (minimize to tray on Windows)
+  - System tray support (Windows and Linux with libappindicator)
+  - Cross-platform sound notifications
   - Saves settings to config.json
+
+Platform notes:
+  - Windows: Full support, no additional setup required
+  - Linux: Requires xdotool (X11) or ydotool/wtype (Wayland) for text injection
+           Requires libappindicator for system tray icon
+  - macOS: Requires Accessibility permission for text injection
 """
 
 from __future__ import annotations
@@ -29,12 +36,105 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 
 # System tray support (optional)
+# On Linux, requires libappindicator or similar tray implementation
 try:
     import pystray
     from PIL import Image, ImageDraw
     TRAY_AVAILABLE = True
 except ImportError:
     TRAY_AVAILABLE = False
+
+# Cross-platform sound support
+import shutil
+import subprocess
+
+
+def _play_beep(frequency: int = 800, duration_ms: int = 100) -> None:
+    """
+    Play a beep sound cross-platform.
+    - Windows: uses winsound.Beep
+    - Linux: uses paplay with generated tone, or falls back to bell
+    - macOS: uses afplay or system bell
+    """
+    system = platform.system()
+
+    if system == "Windows":
+        try:
+            import winsound
+            winsound.Beep(frequency, duration_ms)
+        except Exception:
+            pass
+
+    elif system == "Linux":
+        # Try paplay (PulseAudio) with a simple beep
+        try:
+            # Generate a simple WAV beep in memory using numpy if available
+            import numpy as np
+            import io
+            import wave
+
+            sample_rate = 44100
+            duration = duration_ms / 1000.0
+            t = np.linspace(0, duration, int(sample_rate * duration), False)
+            tone = np.sin(frequency * 2 * np.pi * t)
+            # Apply fade in/out to avoid clicks
+            fade_samples = int(sample_rate * 0.01)
+            tone[:fade_samples] *= np.linspace(0, 1, fade_samples)
+            tone[-fade_samples:] *= np.linspace(1, 0, fade_samples)
+            # Scale to 16-bit
+            audio = (tone * 32767).astype(np.int16)
+
+            # Write to bytes buffer
+            buffer = io.BytesIO()
+            with wave.open(buffer, 'wb') as wav:
+                wav.setnchannels(1)
+                wav.setsampwidth(2)
+                wav.setframerate(sample_rate)
+                wav.writeframes(audio.tobytes())
+
+            wav_data = buffer.getvalue()
+
+            # Try paplay first, then aplay
+            if shutil.which("paplay"):
+                proc = subprocess.Popen(
+                    ["paplay", "--raw", "--channels=1", "--format=s16le", f"--rate={sample_rate}"],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                proc.communicate(input=audio.tobytes())
+            elif shutil.which("aplay"):
+                proc = subprocess.Popen(
+                    ["aplay", "-q", "-f", "S16_LE", "-r", str(sample_rate), "-c", "1"],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+                proc.communicate(input=audio.tobytes())
+            else:
+                # Fallback: terminal bell
+                print("\a", end="", flush=True)
+        except ImportError:
+            # No numpy, use terminal bell
+            print("\a", end="", flush=True)
+        except Exception:
+            pass
+
+    elif system == "Darwin":
+        # macOS: use afplay with system sounds or terminal bell
+        try:
+            # Try to play system sound
+            sound_file = "/System/Library/Sounds/Tink.aiff"
+            if os.path.exists(sound_file):
+                subprocess.run(
+                    ["afplay", sound_file],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            else:
+                print("\a", end="", flush=True)
+        except Exception:
+            print("\a", end="", flush=True)
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -771,8 +871,9 @@ class TalkFlowGUI:
         self._build_ui()
         self._load_devices()
 
-        # Setup system tray (Windows only for now)
-        if platform.system() == "Windows" and TRAY_AVAILABLE:
+        # Setup system tray (Windows and Linux with libappindicator)
+        # On Linux, requires libappindicator or ayatana-appindicator
+        if TRAY_AVAILABLE and platform.system() in ("Windows", "Linux"):
             self._setup_system_tray()
 
         # Handle window close button
@@ -1279,14 +1380,9 @@ class TalkFlowGUI:
         self.root.after(0, lambda: self._update_tray_status("Recording...", recording=True))
         self.root.after(0, lambda: self._log("⏺ Hold to speak..."))
 
-        # Beep on Windows (if sounds enabled)
-        if platform.system() == "Windows" and self.config.get("play_sounds", True):
-            try:
-                import winsound
-                threading.Thread(target=lambda: winsound.Beep(800, 100),
-                                 daemon=True).start()
-            except:
-                pass
+        # Play start beep (if sounds enabled)
+        if self.config.get("play_sounds", True):
+            threading.Thread(target=lambda: _play_beep(800, 100), daemon=True).start()
 
     def _on_hold_stop(self):
         """User released the hotkey — stop recording and transcribe."""
@@ -1300,14 +1396,9 @@ class TalkFlowGUI:
             text="● Transcribing...", foreground="orange"))
         self.root.after(0, lambda: self._update_tray_status("Transcribing..."))
 
-        # Beep on Windows (if sounds enabled)
-        if platform.system() == "Windows" and self.config.get("play_sounds", True):
-            try:
-                import winsound
-                threading.Thread(target=lambda: winsound.Beep(600, 100),
-                                 daemon=True).start()
-            except:
-                pass
+        # Play stop beep (if sounds enabled)
+        if self.config.get("play_sounds", True):
+            threading.Thread(target=lambda: _play_beep(600, 100), daemon=True).start()
 
         n_bytes = len(audio_bytes)
         if n_bytes < 3200:
@@ -1407,7 +1498,10 @@ class TalkFlowGUI:
         if TRAY_AVAILABLE:
             self._log("System tray: enabled (close button minimizes to tray)")
         else:
-            self._log("System tray: disabled (install pystray + pillow to enable)")
+            if platform.system() == "Linux":
+                self._log("System tray: disabled (install pystray, pillow, libappindicator)")
+            else:
+                self._log("System tray: disabled (install pystray + pillow to enable)")
 
         # Auto-start if configured
         if self.config.get("auto_start_on_launch", False):
