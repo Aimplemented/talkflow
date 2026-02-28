@@ -48,6 +48,9 @@ except ImportError:
 import shutil
 import subprocess
 
+# Text post-processing
+from text_processor import clean_transcription
+
 
 def _play_beep(frequency: int = 800, duration_ms: int = 100) -> None:
     """
@@ -1483,7 +1486,8 @@ class TalkFlowGUI:
         time.sleep(0.1)
 
         try:
-            self._injector.type_text(text)
+            cleaned_text = clean_transcription(text)
+            self._injector.type_text(cleaned_text)
         except Exception as exc:
             self.root.after(0, lambda: self._log(f"✗ Injection failed: {exc}"))
 

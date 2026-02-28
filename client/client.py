@@ -22,6 +22,7 @@ import time
 from audio_capture import AudioCapture
 from hotkey_listener import HotkeyListener
 from keystroke_injector import KeystrokeInjector
+from text_processor import clean_transcription
 
 try:
     from websockets.sync.client import connect as ws_connect
@@ -126,10 +127,11 @@ class TalkFlowClient:
             print("⚠  No speech detected.")
             return
 
-        print(f"✓  [{proc_time:.2f}s] {text}")
+        cleaned_text = clean_transcription(text)
+        print(f"✓  [{proc_time:.2f}s] {cleaned_text}")
 
         try:
-            self._injector.type_text(text)
+            self._injector.type_text(cleaned_text)
         except Exception as exc:
             print(f"✗  Injection failed: {exc}")
 
