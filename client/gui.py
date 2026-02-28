@@ -200,12 +200,10 @@ class SystemTrayManager:
         on_show: Callable[[], None],
         on_settings: Callable[[], None],
         on_exit: Callable[[], None],
-        on_toggle: Callable[[], None],
     ):
         self._on_show = on_show
         self._on_settings = on_settings
         self._on_exit = on_exit
-        self._on_toggle = on_toggle
         self._icon: Optional[pystray.Icon] = None
         self._is_recording = False
 
@@ -217,12 +215,10 @@ class SystemTrayManager:
 
         def _run_tray():
             menu = pystray.Menu(
-                pystray.MenuItem("Show TalkFlow", self._on_show, default=True),
-                pystray.MenuItem("Start/Stop", self._on_toggle),
-                pystray.Menu.SEPARATOR,
+                pystray.MenuItem("Show", self._on_show, default=True),
                 pystray.MenuItem("Settings", self._on_settings),
                 pystray.Menu.SEPARATOR,
-                pystray.MenuItem("Exit", self._on_exit),
+                pystray.MenuItem("Quit", self._on_exit),
             )
 
             self._icon = pystray.Icon(
@@ -488,6 +484,9 @@ class TalkFlowGUI:
         # Handle window close button
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
+        # Handle minimize button - hide to tray instead of taskbar
+        self.root.bind("<Unmap>", self._on_minimize)
+
     def _build_ui(self):
         root = self.root
 
@@ -654,7 +653,6 @@ class TalkFlowGUI:
             on_show=self._show_window,
             on_settings=self._show_window,  # Show window for settings
             on_exit=self._exit_app,
-            on_toggle=self._toggle_service,
         )
         self._tray_manager.start()
 
@@ -675,6 +673,19 @@ class TalkFlowGUI:
         self.root.withdraw()
         self._log("Minimized to system tray")
         return True
+
+    def _on_minimize(self, event):
+        """Handle minimize button - hide to tray instead of taskbar."""
+        # Only handle if the window is being iconified (minimized)
+        if event.widget != self.root:
+            return
+        if not self.root.winfo_viewable():
+            return
+        # Check if minimize to tray is enabled
+        if (self.config.get("minimize_to_tray", True) and
+            TRAY_AVAILABLE and self._tray_manager):
+            # Schedule hide after tkinter processes the iconify
+            self.root.after(10, self._hide_to_tray)
 
     def _on_close(self):
         """Handle window close button - minimize to tray or exit."""
