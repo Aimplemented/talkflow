@@ -157,7 +157,11 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 LEGACY_CONFIG_FILE = CONFIG_DIR / "talkflow_config.json"
 
 DEFAULT_CONFIG = {
-    # Server settings
+    # Transcription backend: "groq" (cloud, fast) or "server" (self-hosted)
+    "backend": "groq",
+    "groq_api_key": "REMOVED_GROQ_API_KEY",
+
+    # Server settings (for self-hosted backend)
     "server": "YOUR_SERVER:9876",
 
     # Hotkey settings - supports any key combo (e.g., "f9", "ctrl+win", "ctrl+shift+d")
@@ -974,11 +978,46 @@ class TalkFlowGUI:
 
         ttk.Separator(root, orient="horizontal").pack(fill="x", padx=15, pady=5)
 
-        # === Server ===
-        srv_frame = ttk.LabelFrame(root, text="  Server  ", padding=10)
-        srv_frame.pack(fill="x", padx=15, pady=5)
+        # === Transcription Backend ===
+        backend_frame = ttk.LabelFrame(root, text="  Transcription  ", padding=10)
+        backend_frame.pack(fill="x", padx=15, pady=5)
 
-        row = ttk.Frame(srv_frame)
+        # Backend selection row
+        backend_row = ttk.Frame(backend_frame)
+        backend_row.pack(fill="x")
+        ttk.Label(backend_row, text="Backend:").pack(side="left")
+        self.backend_var = tk.StringVar(value=self.config.get("backend", "groq"))
+        self.backend_combo = ttk.Combobox(
+            backend_row, textvariable=self.backend_var,
+            values=["Groq Cloud (Fast)", "Self-Hosted Server"],
+            state="readonly", width=20
+        )
+        # Set display value based on config
+        if self.config.get("backend", "groq") == "groq":
+            self.backend_combo.set("Groq Cloud (Fast)")
+        else:
+            self.backend_combo.set("Self-Hosted Server")
+        self.backend_combo.pack(side="left", padx=(10, 0))
+        self.backend_combo.bind("<<ComboboxSelected>>", self._on_backend_change)
+
+        # Groq API key row
+        api_row = ttk.Frame(backend_frame)
+        api_row.pack(fill="x", pady=(8, 0))
+        ttk.Label(api_row, text="Groq API Key:").pack(side="left")
+        self.groq_key_var = tk.StringVar(value=self.config.get("groq_api_key", ""))
+        self.groq_key_entry = ttk.Entry(api_row, textvariable=self.groq_key_var, width=40, show="*")
+        self.groq_key_entry.pack(side="left", padx=(10, 0))
+        self.show_key_btn = ttk.Button(api_row, text="👁", width=3, command=self._toggle_key_visibility)
+        self.show_key_btn.pack(side="left", padx=(5, 0))
+
+        self.backend_status = ttk.Label(backend_frame, text="", font=("Segoe UI", 9))
+        self.backend_status.pack(fill="x", pady=(5, 0))
+
+        # === Server (for self-hosted backend) ===
+        self.srv_frame = ttk.LabelFrame(root, text="  Server (Self-Hosted)  ", padding=10)
+        self.srv_frame.pack(fill="x", padx=15, pady=5)
+
+        row = ttk.Frame(self.srv_frame)
         row.pack(fill="x")
         ttk.Label(row, text="Address:").pack(side="left")
         self.server_var = tk.StringVar(value=self.config["server"])
@@ -988,8 +1027,11 @@ class TalkFlowGUI:
                                            command=self._test_server)
         self.test_server_btn.pack(side="right")
 
-        self.server_status = ttk.Label(srv_frame, text="", font=("Segoe UI", 9))
+        self.server_status = ttk.Label(self.srv_frame, text="", font=("Segoe UI", 9))
         self.server_status.pack(fill="x", pady=(5, 0))
+
+        # Update server section visibility based on backend
+        self._update_backend_ui()
 
         # === Microphone ===
         mic_frame = ttk.LabelFrame(root, text="  Microphone  ", padding=10)
@@ -1206,6 +1248,50 @@ class TalkFlowGUI:
         save_config(self.config)
 
     # ------------------------------------------------------------------
+    # Backend selection
+    # ------------------------------------------------------------------
+    def _on_backend_change(self, event=None):
+        """Handle backend dropdown change."""
+        selection = self.backend_combo.get()
+        if "Groq" in selection:
+            self.config["backend"] = "groq"
+        else:
+            self.config["backend"] = "server"
+        self._update_backend_ui()
+        save_config(self.config)
+
+    def _update_backend_ui(self):
+        """Show/hide UI elements based on selected backend."""
+        is_groq = self.config.get("backend", "groq") == "groq"
+
+        # Show/hide server section
+        if is_groq:
+            self.srv_frame.pack_forget()
+            self.groq_key_entry.config(state="normal")
+            self.backend_status.config(
+                text="Using Groq Cloud — fast transcription via API",
+                foreground="green"
+            )
+        else:
+            # Re-pack server frame after backend frame
+            self.srv_frame.pack(fill="x", padx=15, pady=5, after=self.backend_combo.master.master)
+            self.groq_key_entry.config(state="disabled")
+            self.backend_status.config(
+                text="Using self-hosted server — configure address below",
+                foreground="blue"
+            )
+
+    def _toggle_key_visibility(self):
+        """Toggle API key visibility."""
+        current = self.groq_key_entry.cget("show")
+        if current == "*":
+            self.groq_key_entry.config(show="")
+            self.show_key_btn.config(text="🔒")
+        else:
+            self.groq_key_entry.config(show="*")
+            self.show_key_btn.config(text="👁")
+
+    # ------------------------------------------------------------------
     # Devices
     # ------------------------------------------------------------------
     def _load_devices(self):
@@ -1345,6 +1431,12 @@ class TalkFlowGUI:
     # Save
     # ------------------------------------------------------------------
     def _save_settings(self):
+        # Backend settings
+        selection = self.backend_combo.get()
+        self.config["backend"] = "groq" if "Groq" in selection else "server"
+        self.config["groq_api_key"] = self.groq_key_var.get().strip()
+
+        # Server settings
         self.config["server"] = self.server_var.get().strip()
         self.config["hotkey"] = self.hotkey_var.get().strip()
         self.config["mic_device"] = self._get_device_index()
@@ -1501,37 +1593,20 @@ class TalkFlowGUI:
     # Network + injection
     # ------------------------------------------------------------------
     def _send_and_inject(self, audio_bytes: bytes, target_hwnd=None):
-        try:
-            from websockets.sync.client import connect as ws_connect
-        except ImportError:
-            self.root.after(0, lambda: self._log("✗ websockets not installed"))
+        backend = self.config.get("backend", "groq")
+
+        if backend == "groq":
+            response = self._transcribe_groq(audio_bytes)
+        else:
+            response = self._transcribe_server(audio_bytes)
+
+        if response is None:
             return
 
-        ws_url = f"ws://{self._server_url}/ws/dictate"
-
-        try:
-            with ws_connect(ws_url) as ws:
-                total = len(audio_bytes)
-                sent = 0
-                while sent < total:
-                    chunk = audio_bytes[sent:sent + 65536]
-                    ws.send(chunk)
-                    sent += len(chunk)
-
-                ws.send(json.dumps({"action": "transcribe"}))
-                raw = ws.recv(timeout=30.0)
-                response = json.loads(raw)
-
-        except Exception as exc:
-            self.root.after(0, lambda: self._log(f"✗ Connection error: {exc}"))
-            self.root.after(0, lambda: self.status_label.config(
-                text="● Ready", foreground="green"))
-            self.root.after(0, lambda: self._update_tray_status("Ready"))
-            return
-
-        if response.get("type") == "error":
-            msg = response.get("message", "Unknown")
-            self.root.after(0, lambda: self._log(f"✗ Server error: {msg}"))
+        # Handle errors
+        if response.get("error"):
+            error_msg = response["error"]
+            self.root.after(0, lambda e=error_msg: self._log(f"✗ {e}"))
             self.root.after(0, lambda: self.status_label.config(
                 text="● Ready", foreground="green"))
             self.root.after(0, lambda: self._update_tray_status("Ready"))
@@ -1547,6 +1622,7 @@ class TalkFlowGUI:
             self.root.after(0, lambda: self._update_tray_status("Ready"))
             return
 
+        backend_label = "Groq" if backend == "groq" else "Server"
         self.root.after(0, lambda: self._log(f"✓ [{proc_time:.2f}s] {text}"))
         self.root.after(0, lambda: self.status_label.config(
             text="● Ready", foreground="green"))
@@ -1563,6 +1639,50 @@ class TalkFlowGUI:
             self._injector.type_text(cleaned_text)
         except Exception as exc:
             self.root.after(0, lambda: self._log(f"✗ Injection failed: {exc}"))
+
+    def _transcribe_groq(self, audio_bytes: bytes) -> dict:
+        """Transcribe using Groq Cloud API."""
+        from groq_transcribe import transcribe_audio
+
+        api_key = self.config.get("groq_api_key", "")
+        if not api_key:
+            return {"error": "Groq API key not configured", "text": "", "process_time": 0}
+
+        return transcribe_audio(audio_bytes, api_key)
+
+    def _transcribe_server(self, audio_bytes: bytes) -> dict:
+        """Transcribe using self-hosted WebSocket server."""
+        try:
+            from websockets.sync.client import connect as ws_connect
+        except ImportError:
+            return {"error": "websockets not installed", "text": "", "process_time": 0}
+
+        ws_url = f"ws://{self._server_url}/ws/dictate"
+
+        try:
+            with ws_connect(ws_url) as ws:
+                total = len(audio_bytes)
+                sent = 0
+                while sent < total:
+                    chunk = audio_bytes[sent:sent + 65536]
+                    ws.send(chunk)
+                    sent += len(chunk)
+
+                ws.send(json.dumps({"action": "transcribe"}))
+                raw = ws.recv(timeout=30.0)
+                response = json.loads(raw)
+
+            if response.get("type") == "error":
+                return {"error": response.get("message", "Server error"), "text": "", "process_time": 0}
+
+            return {
+                "text": response.get("text", ""),
+                "process_time": response.get("process_time", 0),
+                "error": None,
+            }
+
+        except Exception as exc:
+            return {"error": f"Connection error: {exc}", "text": "", "process_time": 0}
 
     # ------------------------------------------------------------------
     # Run
