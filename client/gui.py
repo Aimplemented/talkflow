@@ -6,10 +6,11 @@ appears wherever your cursor is.
 
 Features:
   - Microphone selection + test
-  - Hotkey configuration + test
+  - Hotkey configuration + test (supports any key combo including Ctrl+Win)
   - Server connection test
   - Push-to-talk dictation
-  - Saves settings to talkflow_config.json
+  - System tray support (minimize to tray on Windows)
+  - Saves settings to config.json
 """
 
 from __future__ import annotations
@@ -22,10 +23,18 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable
 
 import tkinter as tk
 from tkinter import ttk, messagebox
+
+# System tray support (optional)
+try:
+    import pystray
+    from PIL import Image, ImageDraw
+    TRAY_AVAILABLE = True
+except ImportError:
+    TRAY_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -41,33 +50,80 @@ log = logging.getLogger("talkflow.gui")
 # Config
 # ---------------------------------------------------------------------------
 CONFIG_DIR = Path(__file__).parent
-CONFIG_FILE = CONFIG_DIR / "talkflow_config.json"
+CONFIG_FILE = CONFIG_DIR / "config.json"
+LEGACY_CONFIG_FILE = CONFIG_DIR / "talkflow_config.json"
 
 DEFAULT_CONFIG = {
+    # Server settings
     "server": "YOUR_SERVER:9876",
+
+    # Hotkey settings - supports any key combo (e.g., "f9", "ctrl+win", "ctrl+shift+d")
     "hotkey": "f9",
+
+    # Microphone settings
     "mic_device": None,
     "mic_device_name": "System Default",
+
+    # UI preferences
+    "minimize_to_tray": True,
+    "start_minimized": False,
+    "show_notifications": True,
+    "play_sounds": True,
+
+    # Advanced settings
+    "auto_start_on_launch": False,
+    "transcription_timeout": 30,
 }
+
+# Common hotkey presets for quick selection
+HOTKEY_PRESETS = [
+    ("F9", "f9"),
+    ("F10", "f10"),
+    ("F8", "f8"),
+    ("Ctrl+Win", "ctrl+cmd"),       # cmd maps to Win key on Windows
+    ("Ctrl+Shift+D", "ctrl+shift+d"),
+    ("Ctrl+Alt+V", "ctrl+alt+v"),
+]
 
 
 def load_config() -> dict:
+    """Load configuration from config.json, with fallback to legacy file."""
+    # Try new config file first
     if CONFIG_FILE.exists():
         try:
-            with open(CONFIG_FILE) as f:
+            with open(CONFIG_FILE, encoding="utf-8") as f:
                 cfg = json.load(f)
+            # Merge with defaults to handle new config keys
             for k, v in DEFAULT_CONFIG.items():
                 cfg.setdefault(k, v)
+            log.info("Loaded config from %s", CONFIG_FILE)
             return cfg
         except Exception as e:
             log.warning("Failed to load config: %s", e)
+
+    # Try legacy config file
+    if LEGACY_CONFIG_FILE.exists():
+        try:
+            with open(LEGACY_CONFIG_FILE, encoding="utf-8") as f:
+                cfg = json.load(f)
+            for k, v in DEFAULT_CONFIG.items():
+                cfg.setdefault(k, v)
+            log.info("Migrated config from legacy file %s", LEGACY_CONFIG_FILE)
+            # Save to new location
+            save_config(cfg)
+            return cfg
+        except Exception as e:
+            log.warning("Failed to load legacy config: %s", e)
+
     return dict(DEFAULT_CONFIG)
 
 
 def save_config(cfg: dict) -> None:
+    """Save configuration to config.json."""
     try:
-        with open(CONFIG_FILE, "w") as f:
+        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2)
+        log.debug("Config saved to %s", CONFIG_FILE)
     except Exception as e:
         log.error("Failed to save config: %s", e)
 
@@ -172,8 +228,50 @@ def _restore_foreground_window(hwnd):
         return
     try:
         import ctypes
-        ctypes.windll.user32.SetForegroundWindow(hwnd)
-        time.sleep(0.05)  # Brief pause for focus to settle
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
+        # Constants
+        SW_RESTORE = 9
+        SW_SHOW = 5
+        ALT_KEY = 0x12
+        KEYEVENTF_KEYUP = 0x0002
+
+        # Get thread IDs for thread input attachment
+        current_thread = kernel32.GetCurrentThreadId()
+        target_thread = user32.GetWindowThreadProcessId(hwnd, None)
+
+        # Attach our thread's input to the target window's thread
+        # This allows us to call SetForegroundWindow successfully
+        attached = False
+        if current_thread != target_thread:
+            attached = user32.AttachThreadInput(current_thread, target_thread, True)
+
+        try:
+            # Ensure the window is visible and not minimized
+            if user32.IsIconic(hwnd):
+                user32.ShowWindow(hwnd, SW_RESTORE)
+            else:
+                user32.ShowWindow(hwnd, SW_SHOW)
+
+            # Alt key trick to bypass foreground lock (send Alt press/release)
+            user32.keybd_event(ALT_KEY, 0, 0, 0)
+            user32.keybd_event(ALT_KEY, 0, KEYEVENTF_KEYUP, 0)
+
+            # Multiple attempts to set foreground window
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+
+            # Wait for focus to settle
+            time.sleep(0.05)
+
+        finally:
+            # Detach thread input if we attached it
+            if attached:
+                user32.AttachThreadInput(current_thread, target_thread, False)
+
     except Exception as e:
         log.warning("Could not restore focus: %s", e)
 

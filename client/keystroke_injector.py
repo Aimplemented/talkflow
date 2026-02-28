@@ -90,10 +90,124 @@ def _macos_type_applescript(text: str) -> None:
 # Windows implementation
 # ---------------------------------------------------------------------------
 
+def _windows_clipboard_fallback(text: str) -> bool:
+    """
+    Fallback: inject text via clipboard (Ctrl+V).
+    Works in apps that block SendInput (e.g., some elevated or protected apps).
+    Returns True on success, False on failure.
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    try:
+        import pyperclip
+    except ImportError:
+        log.debug("pyperclip not installed, clipboard fallback unavailable")
+        return False
+
+    try:
+        # Save current clipboard content
+        try:
+            old_clipboard = pyperclip.paste()
+        except Exception:
+            old_clipboard = None
+
+        # Copy our text to clipboard
+        pyperclip.copy(text)
+        time.sleep(0.05)  # Brief pause for clipboard to update
+
+        # Send Ctrl+V via SendInput
+        user32 = ctypes.windll.user32
+
+        INPUT_KEYBOARD = 1
+        KEYEVENTF_KEYUP = 0x0002
+        VK_CONTROL = 0x11
+        VK_V = 0x56
+
+        # ULONG_PTR: 8 bytes on 64-bit, 4 bytes on 32-bit
+        ULONG_PTR = ctypes.c_uint64 if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_uint32
+
+        class KEYBDINPUT(ctypes.Structure):
+            _fields_ = [
+                ("wVk",         wintypes.WORD),
+                ("wScan",       wintypes.WORD),
+                ("dwFlags",     wintypes.DWORD),
+                ("time",        wintypes.DWORD),
+                ("dwExtraInfo", ULONG_PTR),
+            ]
+
+        class MOUSEINPUT(ctypes.Structure):
+            _fields_ = [
+                ("dx",          wintypes.LONG),
+                ("dy",          wintypes.LONG),
+                ("mouseData",   wintypes.DWORD),
+                ("dwFlags",     wintypes.DWORD),
+                ("time",        wintypes.DWORD),
+                ("dwExtraInfo", ULONG_PTR),
+            ]
+
+        class HARDWAREINPUT(ctypes.Structure):
+            _fields_ = [
+                ("uMsg",    wintypes.DWORD),
+                ("wParamL", wintypes.WORD),
+                ("wParamH", wintypes.WORD),
+            ]
+
+        class INPUT_UNION(ctypes.Union):
+            _fields_ = [
+                ("ki", KEYBDINPUT),
+                ("mi", MOUSEINPUT),
+                ("hi", HARDWAREINPUT),
+            ]
+
+        class INPUT(ctypes.Structure):
+            _fields_ = [("type", wintypes.DWORD), ("_input", INPUT_UNION)]
+
+        def make_key_input(vk: int, key_up: bool) -> INPUT:
+            ki = KEYBDINPUT(
+                wVk=vk,
+                wScan=0,
+                dwFlags=KEYEVENTF_KEYUP if key_up else 0,
+                time=0,
+                dwExtraInfo=0,
+            )
+            inp = INPUT()
+            inp.type = INPUT_KEYBOARD
+            inp._input.ki = ki
+            return inp
+
+        # Ctrl down, V down, V up, Ctrl up
+        events = (INPUT * 4)(
+            make_key_input(VK_CONTROL, False),
+            make_key_input(VK_V, False),
+            make_key_input(VK_V, True),
+            make_key_input(VK_CONTROL, True),
+        )
+
+        user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
+        user32.SendInput.restype = wintypes.UINT
+        result = user32.SendInput(4, events, ctypes.sizeof(INPUT))
+
+        time.sleep(0.1)  # Wait for paste to complete
+
+        # Restore old clipboard content
+        if old_clipboard is not None:
+            try:
+                pyperclip.copy(old_clipboard)
+            except Exception:
+                pass
+
+        return result == 4
+
+    except Exception as e:
+        log.warning("Clipboard fallback failed: %s", e)
+        return False
+
+
 def _windows_type(text: str) -> None:
     """
     Inject text via SendInput with KEYEVENTF_UNICODE.
-    Sends each character as a Unicode keydown + keyup pair.
+    Falls back to clipboard paste (Ctrl+V) if SendInput fails.
     """
     import ctypes
     from ctypes import wintypes
@@ -105,39 +219,111 @@ def _windows_type(text: str) -> None:
     KEYEVENTF_UNICODE = 0x0004
     KEYEVENTF_KEYUP   = 0x0002
 
+    # ULONG_PTR: pointer-sized integer (8 bytes on 64-bit, 4 bytes on 32-bit)
+    ULONG_PTR = ctypes.c_uint64 if ctypes.sizeof(ctypes.c_void_p) == 8 else ctypes.c_uint32
+
     class KEYBDINPUT(ctypes.Structure):
         _fields_ = [
             ("wVk",         wintypes.WORD),
             ("wScan",       wintypes.WORD),
             ("dwFlags",     wintypes.DWORD),
             ("time",        wintypes.DWORD),
-            ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+            ("dwExtraInfo", ULONG_PTR),
         ]
 
+    # MOUSEINPUT is the largest union member - needed for correct INPUT sizing
+    class MOUSEINPUT(ctypes.Structure):
+        _fields_ = [
+            ("dx",          wintypes.LONG),
+            ("dy",          wintypes.LONG),
+            ("mouseData",   wintypes.DWORD),
+            ("dwFlags",     wintypes.DWORD),
+            ("time",        wintypes.DWORD),
+            ("dwExtraInfo", ULONG_PTR),
+        ]
+
+    class HARDWAREINPUT(ctypes.Structure):
+        _fields_ = [
+            ("uMsg",    wintypes.DWORD),
+            ("wParamL", wintypes.WORD),
+            ("wParamH", wintypes.WORD),
+        ]
+
+    # Union must include all input types for correct structure sizing
     class INPUT_UNION(ctypes.Union):
-        _fields_ = [("ki", KEYBDINPUT)]
+        _fields_ = [
+            ("ki", KEYBDINPUT),
+            ("mi", MOUSEINPUT),
+            ("hi", HARDWAREINPUT),
+        ]
 
     class INPUT(ctypes.Structure):
         _fields_ = [("type", wintypes.DWORD), ("_input", INPUT_UNION)]
 
-    def make_unicode_input(char: str, key_up: bool) -> INPUT:
-        flags = KEYEVENTF_UNICODE | (KEYEVENTF_KEYUP if key_up else 0)
-        ki = KEYBDINPUT(
-            wVk=0,
-            wScan=ord(char),
-            dwFlags=flags,
-            time=0,
-            dwExtraInfo=None,
-        )
-        inp = INPUT(type=INPUT_KEYBOARD, _input=INPUT_UNION(ki=ki))
-        return inp
+    # Set argtypes/restype for proper 64-bit calling convention
+    user32.SendInput.argtypes = [wintypes.UINT, ctypes.POINTER(INPUT), ctypes.c_int]
+    user32.SendInput.restype = wintypes.UINT
 
+    # Build array of INPUT events for the entire text (key down + key up for each char)
+    events_list = []
     for char in text:
-        down = make_unicode_input(char, key_up=False)
-        up   = make_unicode_input(char, key_up=True)
-        events = (INPUT * 2)(down, up)
-        user32.SendInput(2, events, ctypes.sizeof(INPUT))
-        time.sleep(_WIN_CHAR_DELAY)
+        # Handle surrogate pairs for characters outside BMP (e.g., emoji)
+        code = ord(char)
+        if code > 0xFFFF:
+            # Split into UTF-16 surrogate pair
+            code -= 0x10000
+            high = 0xD800 + (code >> 10)
+            low = 0xDC00 + (code & 0x3FF)
+            codes = [high, low]
+        else:
+            codes = [code]
+
+        for scan_code in codes:
+            # Key down
+            ki_down = KEYBDINPUT(
+                wVk=0,
+                wScan=scan_code,
+                dwFlags=KEYEVENTF_UNICODE,
+                time=0,
+                dwExtraInfo=0,
+            )
+            inp_down = INPUT()
+            inp_down.type = INPUT_KEYBOARD
+            inp_down._input.ki = ki_down
+            events_list.append(inp_down)
+
+            # Key up
+            ki_up = KEYBDINPUT(
+                wVk=0,
+                wScan=scan_code,
+                dwFlags=KEYEVENTF_UNICODE | KEYEVENTF_KEYUP,
+                time=0,
+                dwExtraInfo=0,
+            )
+            inp_up = INPUT()
+            inp_up.type = INPUT_KEYBOARD
+            inp_up._input.ki = ki_up
+            events_list.append(inp_up)
+
+    if not events_list:
+        return
+
+    # Create array and send all events at once for better reliability
+    n_events = len(events_list)
+    EventArray = INPUT * n_events
+    events = EventArray(*events_list)
+
+    result = user32.SendInput(n_events, events, ctypes.sizeof(INPUT))
+
+    if result != n_events:
+        error = ctypes.get_last_error()
+        log.warning("SendInput sent %d/%d events (error=%d), trying clipboard fallback",
+                    result, n_events, error)
+        # Fall back to clipboard paste
+        if _windows_clipboard_fallback(text):
+            log.info("Clipboard fallback succeeded")
+        else:
+            log.error("Both SendInput and clipboard fallback failed")
 
 
 # ---------------------------------------------------------------------------
