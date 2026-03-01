@@ -57,6 +57,7 @@ def transcribe_audio(
     model: str = GROQ_MODEL_MULTILINGUAL,
     language: Optional[str] = None,
     timeout: float = 30.0,
+    initial_prompt: Optional[str] = None,
 ) -> dict:
     """
     Transcribe audio using Groq's Whisper API.
@@ -115,6 +116,15 @@ def transcribe_audio(
             body_parts.append(b'Content-Disposition: form-data; name="language"')
             body_parts.append(b"")
             body_parts.append(language.encode())
+
+        # Initial prompt (optional — provides context for punctuation continuity)
+        if initial_prompt:
+            # Trim to last 224 tokens worth (~900 chars) — Whisper's prompt limit
+            prompt_text = initial_prompt[-900:]
+            body_parts.append(f"--{boundary}".encode())
+            body_parts.append(b'Content-Disposition: form-data; name="prompt"')
+            body_parts.append(b"")
+            body_parts.append(prompt_text.encode())
 
         # Response format
         body_parts.append(f"--{boundary}".encode())

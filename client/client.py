@@ -62,6 +62,8 @@ class TalkFlowClient:
         self._is_recording = False
         self._audio = AudioCapture()
         self._injector = KeystrokeInjector()
+        self._last_text: str = ""          # for punctuation continuity
+        self._last_text_time: float = 0.0  # timestamp of last transcription
         self._listener = HotkeyListener(
             hotkey=hotkey,
             on_press_start=self._on_hold_start,
@@ -114,8 +116,12 @@ class TalkFlowClient:
                           daemon=True).start()
 
     def _send_and_inject(self, audio_bytes: bytes) -> None:
+        # Build context prompt for punctuation continuity (clear if > 30s since last chunk)
+        now = time.time()
+        initial_prompt = self._last_text if (now - self._last_text_time) < 30.0 else ""
+
         if self._backend == "groq":
-            response = self._transcribe_groq(audio_bytes)
+            response = self._transcribe_groq(audio_bytes, initial_prompt=initial_prompt)
         else:
             response = self._transcribe_server(audio_bytes)
 
@@ -133,19 +139,23 @@ class TalkFlowClient:
         cleaned_text = clean_transcription(text)
         print(f"✓  [{proc_time:.2f}s] {cleaned_text}")
 
+        # Update context for next chunk
+        self._last_text = (self._last_text + " " + cleaned_text).strip()[-900:]
+        self._last_text_time = time.time()
+
         try:
             self._injector.type_text(cleaned_text)
         except Exception as exc:
             print(f"✗  Injection failed: {exc}")
 
-    def _transcribe_groq(self, audio_bytes: bytes) -> dict:
+    def _transcribe_groq(self, audio_bytes: bytes, initial_prompt: str = "") -> dict:
         """Transcribe using Groq Cloud API."""
         from groq_transcribe import transcribe_audio
 
         if not self._groq_key:
             return {"error": "Groq API key not configured", "text": "", "process_time": 0}
 
-        return transcribe_audio(audio_bytes, self._groq_key)
+        return transcribe_audio(audio_bytes, self._groq_key, initial_prompt=initial_prompt or None)
 
     def _transcribe_server(self, audio_bytes: bytes) -> dict:
         """Transcribe using self-hosted WebSocket server."""
