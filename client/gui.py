@@ -1645,7 +1645,7 @@ class TalkFlowGUI:
             # Update context for next chunk (punctuation continuity)
             self._last_text = (self._last_text + " " + cleaned_text).strip()[-900:]
             self._last_text_time = time.time()
-            self._injector.type_text(cleaned_text)
+            self._injector.type_text(cleaned_text + " ")
         except Exception as exc:
             self.root.after(0, lambda: self._log(f"✗ Injection failed: {exc}"))
 

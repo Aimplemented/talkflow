@@ -144,7 +144,7 @@ class TalkFlowClient:
         self._last_text_time = time.time()
 
         try:
-            self._injector.type_text(cleaned_text)
+            self._injector.type_text(cleaned_text + " ")
         except Exception as exc:
             print(f"✗  Injection failed: {exc}")
 
