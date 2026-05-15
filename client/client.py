@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import platform
 import subprocess
 import sys
@@ -33,8 +34,8 @@ MIN_AUDIO_BYTES = 3200
 WS_CHUNK_SIZE = 64 * 1024
 TRANSCRIBE_TIMEOUT = 30.0
 
-# Default Groq API key (can be overridden via --groq-key)
-DEFAULT_GROQ_KEY = "REMOVED_GROQ_API_KEY"
+# Default Groq API key (loaded from env if present)
+DEFAULT_GROQ_KEY = os.getenv("GROQ_API_KEY", "")
 
 
 def _play_sound(path: str) -> None:
@@ -197,7 +198,7 @@ def main() -> None:
     p.add_argument("--backend", "-b", choices=["groq", "server"], default="groq",
                    help="Transcription backend: groq (cloud) or server (self-hosted)")
     p.add_argument("--groq-key", "-g", default=DEFAULT_GROQ_KEY, metavar="KEY",
-                   help="Groq API key (default: built-in key)")
+                   help="Groq API key (or set GROQ_API_KEY env var)")
     p.add_argument("--server", "-s", default="", metavar="HOST:PORT",
                    help="Server address for self-hosted backend")
     p.add_argument("--hotkey", "-k", default="f9", metavar="COMBO",
@@ -212,6 +213,8 @@ def main() -> None:
     # Validate arguments
     if args.backend == "server" and not args.server:
         p.error("--server is required when using --backend server")
+    if args.backend == "groq" and not args.groq_key:
+        p.error("--groq-key is required when using --backend groq (or set GROQ_API_KEY)")
 
     client = TalkFlowClient(
         hotkey=args.hotkey,

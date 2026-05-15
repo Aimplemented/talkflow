@@ -7,7 +7,11 @@ echo  ========================================
 echo.
 
 set "TF_DIR=%USERPROFILE%\TalkFlow"
-set "SERVER=YOUR_SERVER:9876"
+if defined TALKFLOW_SERVER (
+    set "SERVER=%TALKFLOW_SERVER%"
+) else (
+    set "SERVER=YOUR_SERVER:9876"
+)
 
 :: 1. Check Python
 echo [1/5] Checking Python...

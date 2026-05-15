@@ -159,10 +159,10 @@ LEGACY_CONFIG_FILE = CONFIG_DIR / "talkflow_config.json"
 DEFAULT_CONFIG = {
     # Transcription backend: "groq" (cloud, fast) or "server" (self-hosted)
     "backend": "groq",
-    "groq_api_key": "REMOVED_GROQ_API_KEY",
+    "groq_api_key": os.getenv("GROQ_API_KEY", ""),
 
     # Server settings (for self-hosted backend)
-    "server": "YOUR_SERVER:9876",
+    "server": os.getenv("TALKFLOW_SERVER", "YOUR_SERVER:9876"),
 
     # Hotkey settings - supports any key combo (e.g., "f9", "ctrl+win", "ctrl+shift+d")
     "hotkey": "f9",

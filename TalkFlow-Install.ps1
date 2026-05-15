@@ -5,7 +5,7 @@
 
 $ErrorActionPreference = "Stop"
 $TF_DIR = "$env:USERPROFILE\TalkFlow"
-$SERVER = "YOUR_SERVER:9876"
+$SERVER = if ($env:TALKFLOW_SERVER) { $env:TALKFLOW_SERVER } else { "YOUR_SERVER:9876" }
 
 Write-Host ""
 Write-Host "  ========================================" -ForegroundColor Cyan
