@@ -1,0 +1,106 @@
+name: Build TalkFlow Installers
+
+# Builds Windows .exe, macOS .dmg, and Linux binary for every tag push (vX.Y.Z)
+# and uploads them as release assets. Also runnable manually via workflow_dispatch.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: TalkFlow-windows.zip
+            build_args: ""
+          - os: macos-latest
+            artifact: TalkFlow-macos.dmg
+            build_args: "--dmg"
+          - os: ubuntu-latest
+            artifact: TalkFlow-linux.tar.gz
+            build_args: ""
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Linux system deps
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y portaudio19-dev libcairo2-dev \
+            libgirepository1.0-dev libappindicator3-dev xdotool
+
+      - name: Install macOS build helper (create-dmg)
+        if: matrix.os == 'macos-latest'
+        run: brew install create-dmg cairo
+
+      - name: Install Python deps
+        working-directory: client
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller pillow cairosvg
+
+      - name: Build
+        working-directory: client
+        run: python build_installer.py --clean ${{ matrix.build_args }}
+
+      # Package per-OS into a single uploadable artifact
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        working-directory: client/dist
+        run: |
+          Compress-Archive -Path TalkFlow.exe -DestinationPath ${{ matrix.artifact }}
+        shell: pwsh
+
+      - name: Package (Linux)
+        if: matrix.os == 'ubuntu-latest'
+        working-directory: client/dist
+        run: tar -czf ${{ matrix.artifact }} TalkFlow
+
+      # macOS DMG is already produced by build_installer.py --dmg; just rename it
+      - name: Locate macOS DMG
+        if: matrix.os == 'macos-latest'
+        working-directory: client/dist
+        run: |
+          ls -la
+          mv TalkFlow-*.dmg ${{ matrix.artifact }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: client/dist/${{ matrix.artifact }}
+          if-no-files-found: error
+
+  release:
+    name: Attach to GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*
+          draft: true
+          generate_release_notes: true

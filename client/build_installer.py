@@ -1,388 +1,379 @@
 #!/usr/bin/env python3
 """
-TalkFlow Windows Installer Build Script
-=======================================
-Uses PyInstaller to bundle the TalkFlow client into a standalone Windows executable.
+TalkFlow Cross-Platform Installer Build Script
+==============================================
+Bundles the TalkFlow client into a standalone executable for the current OS.
 
 Usage:
-    python build_installer.py          # Build the executable
-    python build_installer.py --clean  # Clean build artifacts first
-    python build_installer.py --debug  # Build with console window for debugging
+    python build_installer.py                  # Build for current OS
+    python build_installer.py --clean          # Clean build artifacts first
+    python build_installer.py --debug          # Console window for debugging
+    python build_installer.py --dmg            # macOS: also build a .dmg
+    python build_installer.py --target macos   # Force a target (auto-detected by default)
 
 Requirements:
     pip install pyinstaller pillow cairosvg
 
 Output:
-    dist/TalkFlow.exe           - Standalone executable
-    dist/TalkFlow/              - One-folder distribution (if --onedir)
+    Windows:  dist/TalkFlow.exe              (feed into installer.iss with Inno Setup)
+    macOS:    dist/TalkFlow.app              (+ dist/TalkFlow-{version}.dmg with --dmg)
+    Linux:    dist/TalkFlow                  (one-file executable)
 """
 
 from __future__ import annotations
 
 import argparse
 import os
+import platform
+import plistlib
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-# Build configuration
 APP_NAME = "TalkFlow"
 APP_VERSION = "1.0.0"
+APP_BUNDLE_ID = "com.aiimplemented.talkflow"
 MAIN_SCRIPT = "gui.py"
 ICON_SVG = "assets/logo.svg"
 ICON_ICO = "assets/logo.ico"
+ICON_ICNS = "assets/logo.icns"
 
-# PyInstaller options
-PYINSTALLER_OPTS = [
-    "--name", APP_NAME,
-    "--windowed",           # No console window (use --console for debug)
-    "--onefile",            # Single executable
-    "--clean",              # Clean cache before building
-    "--noconfirm",          # Overwrite without asking
-]
-
-# Hidden imports that PyInstaller might miss
-HIDDEN_IMPORTS = [
-    "pynput.keyboard._win32",
-    "pynput.mouse._win32",
+HIDDEN_IMPORTS_COMMON = [
     "sounddevice",
     "numpy",
     "PIL._tkinter_finder",
-    "pystray._win32",
 ]
+HIDDEN_IMPORTS_PER_OS = {
+    "Windows": [
+        "pynput.keyboard._win32",
+        "pynput.mouse._win32",
+        "pystray._win32",
+    ],
+    "Darwin": [
+        "pynput.keyboard._darwin",
+        "pynput.mouse._darwin",
+        "pystray._darwin",
+        "Quartz",
+        "AppKit",
+    ],
+    "Linux": [
+        "pynput.keyboard._xorg",
+        "pynput.mouse._xorg",
+        "pystray._xorg",
+    ],
+}
 
-# Data files to include
-DATA_FILES = [
-    ("assets", "assets"),   # Include assets folder
-]
+DATA_FILES = [("assets", "assets")]
 
 
 def log(msg: str, level: str = "INFO") -> None:
-    """Print a formatted log message."""
-    colors = {
-        "INFO": "\033[94m",
-        "SUCCESS": "\033[92m",
-        "WARNING": "\033[93m",
-        "ERROR": "\033[91m",
-    }
-    reset = "\033[0m"
-    color = colors.get(level, "")
-    print(f"{color}[{level}]{reset} {msg}")
+    colors = {"INFO": "\033[94m", "SUCCESS": "\033[92m",
+              "WARNING": "\033[93m", "ERROR": "\033[91m"}
+    print(f"{colors.get(level, '')}[{level}]\033[0m {msg}")
+
+
+def normalize_target(t: str | None) -> str:
+    if t:
+        m = {"win": "Windows", "windows": "Windows",
+             "mac": "Darwin", "macos": "Darwin", "darwin": "Darwin",
+             "linux": "Linux"}
+        return m.get(t.lower(), t)
+    return platform.system()
 
 
 def check_dependencies() -> bool:
-    """Check that required build tools are installed."""
     log("Checking build dependencies...")
-
     missing = []
-
-    # Check PyInstaller
     try:
         import PyInstaller
         log(f"  PyInstaller: {PyInstaller.__version__}")
     except ImportError:
         missing.append("pyinstaller")
-
-    # Check Pillow (for icon conversion)
     try:
         import PIL
         log(f"  Pillow: {PIL.__version__}")
     except ImportError:
         missing.append("pillow")
-
     if missing:
-        log(f"Missing dependencies: {', '.join(missing)}", "ERROR")
-        log(f"Install with: pip install {' '.join(missing)}", "INFO")
+        log(f"Missing: {', '.join(missing)} — install with: pip install {' '.join(missing)}", "ERROR")
         return False
-
     return True
 
 
-def convert_svg_to_ico(svg_path: Path, ico_path: Path) -> bool:
-    """Convert SVG logo to ICO format for Windows."""
-    log(f"Converting {svg_path.name} to ICO format...")
+def _render_svg_to_png_bytes(svg_path: Path, size: int) -> bytes:
+    import cairosvg
+    return cairosvg.svg2png(url=str(svg_path), output_width=size, output_height=size)
 
+
+def _fallback_png_image(size: int):
+    from PIL import Image, ImageDraw
+    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    margin = size // 8
+    draw.ellipse([margin, margin, size - margin, size - margin], fill=(8, 145, 178, 255))
+    c = size // 4
+    draw.ellipse([c, c, size - c, size - c], fill=(255, 255, 255, 230))
+    return img
+
+
+def convert_svg_to_ico(svg_path: Path, ico_path: Path) -> bool:
+    """Multi-resolution .ico for Windows."""
+    log(f"Generating {ico_path.name}...")
     try:
         from PIL import Image
         import io
-
-        # Try using cairosvg for high-quality SVG rendering
+        sizes = [16, 32, 48, 64, 128, 256]
+        images = []
         try:
-            import cairosvg
-
-            # Render SVG at multiple sizes for ICO
-            sizes = [16, 32, 48, 64, 128, 256]
-            images = []
-
-            for size in sizes:
-                png_data = cairosvg.svg2png(
-                    url=str(svg_path),
-                    output_width=size,
-                    output_height=size,
-                )
-                img = Image.open(io.BytesIO(png_data))
-                # Convert to RGBA if needed
-                if img.mode != "RGBA":
-                    img = img.convert("RGBA")
-                images.append(img)
-
-            # Save as multi-resolution ICO
-            images[0].save(
-                ico_path,
-                format="ICO",
-                sizes=[(s, s) for s in sizes],
-                append_images=images[1:],
-            )
-            log(f"  Created {ico_path} with {len(sizes)} resolutions", "SUCCESS")
-            return True
-
+            for s in sizes:
+                images.append(Image.open(io.BytesIO(_render_svg_to_png_bytes(svg_path, s))).convert("RGBA"))
         except ImportError:
-            log("  cairosvg not available, creating simple icon", "WARNING")
+            log("  cairosvg missing, using fallback icon", "WARNING")
+            images = [_fallback_png_image(s) for s in sizes]
+        images[0].save(ico_path, format="ICO",
+                       sizes=[(s, s) for s in sizes],
+                       append_images=images[1:])
+        log(f"  Wrote {ico_path}", "SUCCESS")
+        return True
+    except Exception as e:
+        log(f"Icon conversion failed: {e}", "ERROR")
+        return False
 
-            # Fallback: Create a simple colored icon
-            sizes = [16, 32, 48, 64, 128, 256]
-            images = []
 
-            for size in sizes:
-                # Create a teal/cyan gradient-like icon
-                img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+def convert_svg_to_icns(svg_path: Path, icns_path: Path) -> bool:
+    """Generate macOS .icns by building an iconset and invoking iconutil."""
+    log(f"Generating {icns_path.name}...")
+    iconset = icns_path.with_suffix(".iconset")
+    if iconset.exists():
+        shutil.rmtree(iconset)
+    iconset.mkdir(parents=True)
 
-                # Draw a simple microphone-like shape
-                from PIL import ImageDraw
-                draw = ImageDraw.Draw(img)
+    # Apple's required iconset sizes: 16, 32, 128, 256, 512 (and @2x of each)
+    pairs = [
+        (16, "icon_16x16.png"), (32, "icon_16x16@2x.png"),
+        (32, "icon_32x32.png"), (64, "icon_32x32@2x.png"),
+        (128, "icon_128x128.png"), (256, "icon_128x128@2x.png"),
+        (256, "icon_256x256.png"), (512, "icon_256x256@2x.png"),
+        (512, "icon_512x512.png"), (1024, "icon_512x512@2x.png"),
+    ]
+    try:
+        from PIL import Image
+        import io
+        try:
+            renders = {s: Image.open(io.BytesIO(_render_svg_to_png_bytes(svg_path, s))).convert("RGBA")
+                       for s in {p[0] for p in pairs}}
+        except ImportError:
+            log("  cairosvg missing, using fallback icon", "WARNING")
+            renders = {s: _fallback_png_image(s) for s in {p[0] for p in pairs}}
 
-                # Background circle
-                margin = size // 8
-                draw.ellipse(
-                    [margin, margin, size - margin, size - margin],
-                    fill=(8, 145, 178, 255)  # Teal color
-                )
+        for size, name in pairs:
+            renders[size].save(iconset / name, format="PNG")
 
-                # White center (simplified waveform representation)
-                center_margin = size // 4
-                draw.ellipse(
-                    [center_margin, center_margin, size - center_margin, size - center_margin],
-                    fill=(255, 255, 255, 230)
-                )
-
-                images.append(img)
-
-            # Save as ICO
-            images[0].save(
-                ico_path,
-                format="ICO",
-                sizes=[(s, s) for s in sizes],
-                append_images=images[1:],
-            )
-            log(f"  Created fallback {ico_path}", "SUCCESS")
+        if shutil.which("iconutil"):
+            subprocess.check_call(
+                ["iconutil", "--convert", "icns", str(iconset), "--output", str(icns_path)])
+            log(f"  Wrote {icns_path}", "SUCCESS")
+            shutil.rmtree(iconset, ignore_errors=True)
             return True
 
+        # Fallback: PIL can write .icns directly (lower quality but works off-macOS)
+        log("  iconutil not available, using PIL fallback", "WARNING")
+        largest = renders[max(renders)]
+        largest.save(icns_path, format="ICNS")
+        shutil.rmtree(iconset, ignore_errors=True)
+        return True
     except Exception as e:
-        log(f"Failed to convert icon: {e}", "ERROR")
+        log(f"icns generation failed: {e}", "ERROR")
         return False
 
 
 def clean_build_artifacts(project_dir: Path) -> None:
-    """Remove previous build artifacts."""
     log("Cleaning build artifacts...")
-
-    dirs_to_clean = ["build", "dist", "__pycache__"]
-    files_to_clean = [f"{APP_NAME}.spec"]
-
-    for dir_name in dirs_to_clean:
-        dir_path = project_dir / dir_name
-        if dir_path.exists():
-            shutil.rmtree(dir_path)
-            log(f"  Removed {dir_name}/")
-
-    for file_name in files_to_clean:
-        file_path = project_dir / file_name
-        if file_path.exists():
-            file_path.unlink()
-            log(f"  Removed {file_name}")
+    for d in ("build", "dist", "__pycache__"):
+        p = project_dir / d
+        if p.exists():
+            shutil.rmtree(p)
+            log(f"  Removed {d}/")
+    for f in (f"{APP_NAME}.spec",):
+        p = project_dir / f
+        if p.exists():
+            p.unlink()
+            log(f"  Removed {f}")
 
 
-def build_executable(project_dir: Path, debug: bool = False) -> bool:
-    """Build the executable using PyInstaller."""
-    log("Building executable with PyInstaller...")
-
+def build_executable(project_dir: Path, target: str, debug: bool) -> bool:
+    """PyInstaller invocation tailored to target OS."""
+    log(f"Building for {target}...")
     main_script = project_dir / MAIN_SCRIPT
-    icon_file = project_dir / ICON_ICO
-
     if not main_script.exists():
-        log(f"Main script not found: {main_script}", "ERROR")
+        log(f"Missing entry script: {main_script}", "ERROR")
         return False
 
-    # Build PyInstaller command
-    cmd = ["pyinstaller"]
-    cmd.extend(PYINSTALLER_OPTS)
+    cmd = ["pyinstaller", "--name", APP_NAME, "--clean", "--noconfirm"]
 
-    # Add icon if available
-    if icon_file.exists():
-        cmd.extend(["--icon", str(icon_file)])
-        log(f"  Using icon: {icon_file.name}")
+    if target == "Windows":
+        cmd += ["--onefile", "--windowed" if not debug else "--console"]
+        icon = project_dir / ICON_ICO
+        if icon.exists():
+            cmd += ["--icon", str(icon)]
+    elif target == "Darwin":
+        # PyInstaller creates a .app when --windowed is set on macOS
+        cmd += ["--onedir", "--windowed" if not debug else "--console",
+                "--osx-bundle-identifier", APP_BUNDLE_ID]
+        icon = project_dir / ICON_ICNS
+        if icon.exists():
+            cmd += ["--icon", str(icon)]
+    elif target == "Linux":
+        cmd += ["--onefile", "--windowed" if not debug else "--console"]
+        # Linux PyInstaller doesn't use icons in the binary itself
     else:
-        log("  No icon file found, building without icon", "WARNING")
+        log(f"Unsupported target: {target}", "ERROR")
+        return False
 
-    # Add hidden imports
-    for imp in HIDDEN_IMPORTS:
-        cmd.extend(["--hidden-import", imp])
+    for imp in HIDDEN_IMPORTS_COMMON + HIDDEN_IMPORTS_PER_OS.get(target, []):
+        cmd += ["--hidden-import", imp]
 
-    # Add data files
     for src, dst in DATA_FILES:
-        src_path = project_dir / src
-        if src_path.exists():
-            # PyInstaller data format: source;destination
-            cmd.extend(["--add-data", f"{src_path}{os.pathsep}{dst}"])
+        sp = project_dir / src
+        if sp.exists():
+            cmd += ["--add-data", f"{sp}{os.pathsep}{dst}"]
 
-    # Debug mode: show console
-    if debug:
-        cmd = [c for c in cmd if c != "--windowed"]
-        cmd.append("--console")
-        log("  Debug mode: console window enabled")
-
-    # Add main script
     cmd.append(str(main_script))
+    log(f"  $ {' '.join(cmd[:6])} ... ({len(cmd)} args)")
+    result = subprocess.run(cmd, cwd=project_dir)
+    if result.returncode != 0:
+        log("PyInstaller failed", "ERROR")
+        return False
 
-    log(f"  Running: {' '.join(cmd[:5])}...")
+    dist = project_dir / "dist"
+    if target == "Windows":
+        out = dist / f"{APP_NAME}.exe"
+    elif target == "Darwin":
+        out = dist / f"{APP_NAME}.app"
+    else:
+        out = dist / APP_NAME
 
-    # Run PyInstaller
-    try:
-        result = subprocess.run(
-            cmd,
-            cwd=project_dir,
-            capture_output=True,
-            text=True,
-        )
+    if not out.exists():
+        log(f"Expected output not found: {out}", "ERROR")
+        return False
 
-        if result.returncode != 0:
-            log("PyInstaller failed:", "ERROR")
-            print(result.stderr)
-            return False
+    log(f"Built: {out}", "SUCCESS")
+    return True
 
-        # Check output
-        exe_path = project_dir / "dist" / f"{APP_NAME}.exe"
-        if exe_path.exists():
-            size_mb = exe_path.stat().st_size / (1024 * 1024)
-            log(f"Build successful: {exe_path} ({size_mb:.1f} MB)", "SUCCESS")
+
+def write_macos_info_plist(project_dir: Path) -> None:
+    """Patch the bundled Info.plist with mic usage + LSUIElement etc.
+
+    PyInstaller creates a minimal Info.plist; we add the keys the OS needs
+    so the user gets a real mic permission prompt instead of silent failure.
+    """
+    app = project_dir / "dist" / f"{APP_NAME}.app"
+    plist_path = app / "Contents" / "Info.plist"
+    if not plist_path.exists():
+        log(f"Info.plist not found at {plist_path}", "WARNING")
+        return
+
+    with open(plist_path, "rb") as f:
+        plist = plistlib.load(f)
+
+    plist["CFBundleIdentifier"] = APP_BUNDLE_ID
+    plist["CFBundleShortVersionString"] = APP_VERSION
+    plist["CFBundleVersion"] = APP_VERSION
+    plist["NSMicrophoneUsageDescription"] = (
+        "TalkFlow needs microphone access to capture your voice for dictation.")
+    plist["NSAppleEventsUsageDescription"] = (
+        "TalkFlow uses Apple Events to type transcribed text into the focused app.")
+    # Keep it visible in the Dock — users want to find the settings window.
+    plist["LSMinimumSystemVersion"] = "11.0"
+    plist["NSHighResolutionCapable"] = True
+
+    with open(plist_path, "wb") as f:
+        plistlib.dump(plist, f)
+    log(f"Patched {plist_path.name} (mic + bundle metadata)", "SUCCESS")
+
+
+def build_macos_dmg(project_dir: Path) -> bool:
+    """Wrap the .app into a .dmg. Requires `create-dmg` or falls back to hdiutil."""
+    app = project_dir / "dist" / f"{APP_NAME}.app"
+    if not app.exists():
+        log("No .app to package into DMG", "ERROR")
+        return False
+
+    dmg_path = project_dir / "dist" / f"{APP_NAME}-{APP_VERSION}.dmg"
+    if dmg_path.exists():
+        dmg_path.unlink()
+
+    if shutil.which("create-dmg"):
+        log("Building DMG with create-dmg...")
+        cmd = ["create-dmg",
+               "--volname", f"{APP_NAME} {APP_VERSION}",
+               "--window-size", "540", "360",
+               "--icon-size", "100",
+               "--icon", f"{APP_NAME}.app", "140", "180",
+               "--app-drop-link", "400", "180",
+               str(dmg_path), str(app)]
+        result = subprocess.run(cmd)
+        if result.returncode == 0:
+            log(f"DMG: {dmg_path}", "SUCCESS")
             return True
-        else:
-            log("Executable not found after build", "ERROR")
-            return False
+        log("create-dmg failed, falling back to hdiutil", "WARNING")
 
-    except FileNotFoundError:
-        log("PyInstaller not found. Install with: pip install pyinstaller", "ERROR")
-        return False
-    except Exception as e:
-        log(f"Build failed: {e}", "ERROR")
-        return False
+    if shutil.which("hdiutil"):
+        log("Building DMG with hdiutil...")
+        result = subprocess.run([
+            "hdiutil", "create", "-volname", f"{APP_NAME} {APP_VERSION}",
+            "-srcfolder", str(app), "-ov", "-format", "UDZO",
+            str(dmg_path)])
+        if result.returncode == 0:
+            log(f"DMG: {dmg_path}", "SUCCESS")
+            return True
 
-
-def create_version_info(project_dir: Path) -> None:
-    """Create a version info file for Windows executable metadata."""
-    version_file = project_dir / "version_info.txt"
-
-    # Parse version into tuple
-    version_parts = APP_VERSION.split(".")
-    while len(version_parts) < 4:
-        version_parts.append("0")
-    version_tuple = ", ".join(version_parts[:4])
-
-    content = f'''# UTF-8
-VSVersionInfo(
-  ffi=FixedFileInfo(
-    filevers=({version_tuple}),
-    prodvers=({version_tuple}),
-    mask=0x3f,
-    flags=0x0,
-    OS=0x40004,
-    fileType=0x1,
-    subtype=0x0,
-    date=(0, 0)
-  ),
-  kids=[
-    StringFileInfo(
-      [
-        StringTable(
-          '040904B0',
-          [
-            StringStruct('CompanyName', 'AI Implemented'),
-            StringStruct('FileDescription', 'TalkFlow - Voice Dictation Client'),
-            StringStruct('FileVersion', '{APP_VERSION}'),
-            StringStruct('InternalName', '{APP_NAME}'),
-            StringStruct('LegalCopyright', 'Copyright 2026 AI Implemented'),
-            StringStruct('OriginalFilename', '{APP_NAME}.exe'),
-            StringStruct('ProductName', '{APP_NAME}'),
-            StringStruct('ProductVersion', '{APP_VERSION}'),
-          ]
-        )
-      ]
-    ),
-    VarFileInfo([VarStruct('Translation', [1033, 1200])])
-  ]
-)
-'''
-
-    version_file.write_text(content)
-    log(f"Created version info: {version_file.name}")
+    log("No DMG tool found (install `create-dmg` via Homebrew, or run on macOS for hdiutil)", "ERROR")
+    return False
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(
-        description="Build TalkFlow Windows installer"
-    )
-    parser.add_argument(
-        "--clean", action="store_true",
-        help="Clean build artifacts before building"
-    )
-    parser.add_argument(
-        "--debug", action="store_true",
-        help="Build with console window for debugging"
-    )
-    parser.add_argument(
-        "--skip-icon", action="store_true",
-        help="Skip icon conversion"
-    )
+    parser = argparse.ArgumentParser(description="Build TalkFlow installer for current OS")
+    parser.add_argument("--clean", action="store_true")
+    parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--skip-icon", action="store_true")
+    parser.add_argument("--dmg", action="store_true", help="macOS: also build a .dmg")
+    parser.add_argument("--target", default=None,
+                        help="windows|macos|linux (auto-detect by default)")
     args = parser.parse_args()
 
-    # Determine project directory
+    target = normalize_target(args.target)
     project_dir = Path(__file__).parent.resolve()
-    log(f"Project directory: {project_dir}")
+    log(f"Target: {target}   Project: {project_dir}")
 
-    # Check dependencies
     if not check_dependencies():
         return 1
-
-    # Clean if requested
     if args.clean:
         clean_build_artifacts(project_dir)
 
-    # Convert icon
     if not args.skip_icon:
-        svg_path = project_dir / ICON_SVG
-        ico_path = project_dir / ICON_ICO
+        svg = project_dir / ICON_SVG
+        if svg.exists():
+            if target == "Windows":
+                ico = project_dir / ICON_ICO
+                if not ico.exists() and not convert_svg_to_ico(svg, ico):
+                    log("Continuing without icon", "WARNING")
+            elif target == "Darwin":
+                icns = project_dir / ICON_ICNS
+                if not icns.exists() and not convert_svg_to_icns(svg, icns):
+                    log("Continuing without icon", "WARNING")
 
-        if svg_path.exists() and not ico_path.exists():
-            if not convert_svg_to_ico(svg_path, ico_path):
-                log("Icon conversion failed, continuing without icon", "WARNING")
-        elif ico_path.exists():
-            log(f"Using existing icon: {ico_path.name}")
-
-    # Create version info
-    create_version_info(project_dir)
-
-    # Build executable
-    if not build_executable(project_dir, debug=args.debug):
+    if not build_executable(project_dir, target, debug=args.debug):
         return 1
+
+    if target == "Darwin":
+        write_macos_info_plist(project_dir)
+        if args.dmg and not build_macos_dmg(project_dir):
+            return 1
 
     log("=" * 50)
     log("Build complete!", "SUCCESS")
-    log(f"Executable: {project_dir / 'dist' / APP_NAME}.exe")
-    log("Next steps:")
-    log("  1. Test the executable")
-    log("  2. Run Inno Setup with installer.iss to create installer")
-
     return 0
 
 

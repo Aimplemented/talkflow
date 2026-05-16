@@ -19,5 +19,10 @@ pynput>=1.7.6           # Global hotkey listener (cross-platform)
 pystray>=0.19.5         # System tray icon support
 Pillow>=10.0.0          # Image processing for tray icon
 
+# macOS Accessibility / mic-permission detection
+pyobjc-framework-ApplicationServices>=10.0; sys_platform == "darwin"
+pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"
+
 # Build tools (development only)
 # pyinstaller>=6.0.0    # For building standalone executables
+# cairosvg>=2.7.0       # For SVG→ICO/ICNS icon conversion during builds

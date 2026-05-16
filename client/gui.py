@@ -140,21 +140,57 @@ def _play_beep(frequency: int = 800, duration_ms: int = 100) -> None:
             print("\a", end="", flush=True)
 
 # ---------------------------------------------------------------------------
-# Logging
+# Paths (OS-standard config + log locations)
 # ---------------------------------------------------------------------------
+from paths import (
+    app_data_dir,
+    log_dir,
+    config_path,
+    log_path,
+    migrate_legacy_config_if_needed,
+)
+
+_SCRIPT_DIR = Path(__file__).parent
+migrate_legacy_config_if_needed(_SCRIPT_DIR)
+
+
+def _open_path_in_file_browser(path: "Path") -> None:
+    """Reveal a path in the OS file manager (used by the 'Open logs folder' menu)."""
+    import subprocess as _sp
+    try:
+        if platform.system() == "Windows":
+            os.startfile(str(path))  # type: ignore[attr-defined]
+        elif platform.system() == "Darwin":
+            _sp.Popen(["open", str(path)])
+        else:
+            _sp.Popen(["xdg-open", str(path)])
+    except Exception:
+        pass
+
+# ---------------------------------------------------------------------------
+# Logging — write to both stderr and a rotating file in the OS log dir
+# ---------------------------------------------------------------------------
+_log_handlers = [logging.StreamHandler()]
+try:
+    from logging.handlers import RotatingFileHandler
+    _log_handlers.append(RotatingFileHandler(log_path(), maxBytes=1_000_000, backupCount=3))
+except Exception:
+    pass
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-8s  %(message)s",
     datefmt="%H:%M:%S",
+    handlers=_log_handlers,
 )
 log = logging.getLogger("talkflow.gui")
 
 # ---------------------------------------------------------------------------
 # Config
 # ---------------------------------------------------------------------------
-CONFIG_DIR = Path(__file__).parent
-CONFIG_FILE = CONFIG_DIR / "config.json"
-LEGACY_CONFIG_FILE = CONFIG_DIR / "talkflow_config.json"
+CONFIG_DIR = app_data_dir()
+CONFIG_FILE = config_path()
+LEGACY_CONFIG_FILE = _SCRIPT_DIR / "talkflow_config.json"
 
 DEFAULT_CONFIG = {
     # Transcription backend: "groq" (cloud, fast) or "server" (self-hosted)
@@ -357,10 +393,15 @@ class SystemTrayManager:
             log.warning("System tray not available (pystray/PIL not installed)")
             return
 
+        def _open_logs(_icon=None, _item=None):
+            _open_path_in_file_browser(log_dir())
+
         def _run_tray():
             menu = pystray.Menu(
-                pystray.MenuItem("Show", self._on_show, default=True),
+                pystray.MenuItem("Show settings", self._on_show, default=True),
                 pystray.MenuItem("Start/Stop", self._on_toggle),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem("Open logs folder", _open_logs),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Quit", self._on_exit),
             )
@@ -1719,8 +1760,48 @@ class TalkFlowGUI:
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
+def _maybe_run_first_run_wizard():
+    """Show the setup wizard if no config exists yet, and save its result."""
+    if CONFIG_FILE.exists():
+        return
+    try:
+        from setup_wizard import run_wizard_if_first_run
+    except Exception as e:
+        log.warning("Setup wizard unavailable: %s", e)
+        return
+    result = run_wizard_if_first_run(dict(DEFAULT_CONFIG), already_configured=False)
+    if result:
+        save_config(result)
+        log.info("First-run wizard complete — config saved to %s", CONFIG_FILE)
+
+
+def _check_macos_accessibility():
+    """On macOS, warn if Accessibility permission is missing (keystroke injection
+    needs it). Offers to open the right System Settings pane."""
+    if platform.system() != "Darwin":
+        return
+    try:
+        from macos_support import (
+            check_accessibility_trusted,
+            open_accessibility_settings,
+        )
+    except Exception:
+        return
+    trusted = check_accessibility_trusted()
+    if trusted is False:
+        if messagebox.askyesno(
+                "Accessibility permission needed",
+                "TalkFlow needs Accessibility permission to type transcribed text\n"
+                "into other applications.\n\n"
+                "Open System Settings → Privacy & Security → Accessibility now?\n\n"
+                "(After enabling TalkFlow there, quit and relaunch this app.)"):
+            open_accessibility_settings()
+
+
 def main():
+    _maybe_run_first_run_wizard()
     app = TalkFlowGUI()
+    _check_macos_accessibility()
     app.run()
 
 
