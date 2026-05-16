@@ -19,9 +19,12 @@ pynput>=1.7.6           # Global hotkey listener (cross-platform)
 pystray>=0.19.5         # System tray icon support
 Pillow>=10.0.0          # Image processing for tray icon
 
-# macOS Accessibility / mic-permission detection
+# macOS Accessibility / Input Monitoring / mic-permission detection.
+# pynput pulls Quartz transitively, but we list it explicitly so PyInstaller
+# bundles it reliably and macos_support.py can import it.
 pyobjc-framework-ApplicationServices>=10.0; sys_platform == "darwin"
 pyobjc-framework-Cocoa>=10.0; sys_platform == "darwin"
+pyobjc-framework-Quartz>=10.0; sys_platform == "darwin"
 
 # Build tools (development only)
 # pyinstaller>=6.0.0    # For building standalone executables

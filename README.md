@@ -300,6 +300,21 @@ python build_installer.py --skip-icon
 
 ## Troubleshooting
 
+### Quick self-test
+
+Before debugging anything else, run the built-in diagnostics:
+
+```bash
+cd client
+python gui.py --doctor
+```
+
+This walks every layer that has to work — Python deps, config file, microphone
+capture, hotkey listener, keystroke injector, macOS permissions, and backend
+reachability — and prints `PASS` / `FAIL` / `WARN` for each. If everything's
+green and you still can't dictate, the bug is in the part doctor can't simulate
+(an actual global keypress while another app is focused) — tell us about it.
+
 ### Server Issues
 
 **"CUDA out of memory"**

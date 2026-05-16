@@ -60,13 +60,19 @@ def check_environment(r: Result) -> None:
     r.info("Python", sys.version.split()[0])
     if platform.system() == "Linux":
         import os
-        session = os.environ.get("XDG_SESSION_TYPE", "?")
-        if session == "wayland":
+        # Wayland can advertise itself via either signal; check both.
+        session = os.environ.get("XDG_SESSION_TYPE", "")
+        wayland_display = os.environ.get("WAYLAND_DISPLAY", "")
+        x11_display = os.environ.get("DISPLAY", "")
+        if session == "wayland" or wayland_display:
             r.warned("Display server",
-                     "Wayland — pynput can't capture global hotkeys here. "
-                     "Switch to an X11 session for now.")
+                     "Wayland — pynput cannot capture global hotkeys here. "
+                     "Log out and pick an Xorg/X11 session at the login screen.")
+        elif session == "x11" or x11_display:
+            r.passed("Display server", "X11")
         else:
-            r.passed("Display server", session)
+            r.warned("Display server",
+                     "unknown (no XDG_SESSION_TYPE, DISPLAY, or WAYLAND_DISPLAY)")
 
 
 def check_imports(r: Result) -> None:
@@ -169,12 +175,21 @@ def check_hotkey_listener(r: Result, cfg: dict) -> None:
     except Exception as e:
         r.failed("hotkey_listener import", str(e))
         return
+    noop = lambda: None
     try:
-        hl = HotkeyListener(hotkey=cfg.get("hotkey", "f9"), on_toggle=lambda: None)
+        hl = HotkeyListener(
+            hotkey=cfg.get("hotkey", "f9"),
+            on_press_start=noop,
+            on_press_stop=noop,
+            mode="push-to-talk",
+        )
         hl.start()
         time.sleep(0.3)
         hl.stop()
-        r.passed("Listener start/stop", "OK (this does not prove global capture)")
+        r.passed("Listener start/stop", "OK")
+        r.info("",
+               "Doctor can't simulate a real keypress — to verify the hotkey\n"
+               "                                         actually fires, launch the GUI and try it.")
     except Exception as e:
         r.failed("Listener start/stop", str(e))
 
@@ -258,18 +273,27 @@ def check_backend_reachable(r: Result, cfg: dict) -> None:
         r.warned("Backend", f"unrecognized: {backend!r}")
 
 
+def _safe(r: Result, name: str, fn, *args):
+    """Run a check, treat unexpected exceptions as a FAIL row instead of crashing."""
+    try:
+        return fn(r, *args)
+    except Exception as e:
+        r.failed(f"check '{name}' crashed", repr(e))
+        return None
+
+
 def run_doctor() -> int:
     print("\n\033[1mTalkFlow Doctor\033[0m  — checking that every layer works\n")
     r = Result()
-    check_environment(r)
-    check_imports(r)
-    cfg = check_config(r)
-    check_microphone(r, cfg)
-    check_hotkey_listener(r, cfg)
-    check_keystroke_injector(r)
-    check_macos_permissions(r)
+    _safe(r, "environment", check_environment)
+    _safe(r, "imports", check_imports)
+    cfg = _safe(r, "config", check_config) or {}
+    _safe(r, "microphone", check_microphone, cfg)
+    _safe(r, "hotkey_listener", check_hotkey_listener, cfg)
+    _safe(r, "keystroke_injector", check_keystroke_injector)
+    _safe(r, "macos_permissions", check_macos_permissions)
     if cfg:
-        check_backend_reachable(r, cfg)
+        _safe(r, "backend_reachable", check_backend_reachable, cfg)
 
     print()
     if r.failures == 0:

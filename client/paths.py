@@ -12,6 +12,7 @@ read-only binary.
 
 from __future__ import annotations
 
+import functools
 import os
 import platform
 import shutil
@@ -20,6 +21,7 @@ from pathlib import Path
 APP_NAME = "TalkFlow"
 
 
+@functools.lru_cache(maxsize=1)
 def app_data_dir() -> Path:
     system = platform.system()
     if system == "Windows":
@@ -34,6 +36,7 @@ def app_data_dir() -> Path:
     return d
 
 
+@functools.lru_cache(maxsize=1)
 def log_dir() -> Path:
     system = platform.system()
     if system == "Darwin":
@@ -60,6 +63,7 @@ def migrate_legacy_config_if_needed(script_dir: Path) -> None:
 
     Older builds stored config next to the script. After install, that
     location is read-only (and is wiped on upgrade), so move it.
+    Idempotent: if the new file already exists, this is a no-op.
     """
     target = config_path()
     if target.exists():
@@ -71,4 +75,5 @@ def migrate_legacy_config_if_needed(script_dir: Path) -> None:
                 shutil.copy2(legacy, target)
                 return
             except Exception:
+                # Don't crash the app over a migration hiccup
                 pass

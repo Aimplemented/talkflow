@@ -22,8 +22,13 @@ jobs:
           - os: windows-latest
             artifact: TalkFlow-windows.zip
             build_args: ""
-          - os: macos-latest
-            artifact: TalkFlow-macos.dmg
+          # macos-14 = Apple Silicon (arm64), macos-13 = Intel (x86_64).
+          # PyInstaller bundles the host arch, so we need both to cover all Macs.
+          - os: macos-14
+            artifact: TalkFlow-macos-arm64.dmg
+            build_args: "--dmg"
+          - os: macos-13
+            artifact: TalkFlow-macos-intel.dmg
             build_args: "--dmg"
           - os: ubuntu-latest
             artifact: TalkFlow-linux.tar.gz
@@ -46,7 +51,7 @@ jobs:
             libgirepository1.0-dev libappindicator3-dev xdotool
 
       - name: Install macOS build helper (create-dmg)
-        if: matrix.os == 'macos-latest'
+        if: startsWith(matrix.os, 'macos-')
         run: brew install create-dmg cairo
 
       - name: Install Python deps
@@ -75,7 +80,7 @@ jobs:
 
       # macOS DMG is already produced by build_installer.py --dmg; just rename it
       - name: Locate macOS DMG
-        if: matrix.os == 'macos-latest'
+        if: startsWith(matrix.os, 'macos-')
         working-directory: client/dist
         run: |
           ls -la

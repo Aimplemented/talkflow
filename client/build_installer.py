@@ -344,8 +344,14 @@ def main() -> int:
     args = parser.parse_args()
 
     target = normalize_target(args.target)
+    host = platform.system()
     project_dir = Path(__file__).parent.resolve()
-    log(f"Target: {target}   Project: {project_dir}")
+    log(f"Target: {target}   Host: {host}   Project: {project_dir}")
+
+    if target != host:
+        log(f"PyInstaller cannot cross-build: host is {host} but target is {target}.\n"
+            f"Run this script on a {target} machine (or in a {target} CI job).", "ERROR")
+        return 2
 
     if not check_dependencies():
         return 1

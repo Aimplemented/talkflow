@@ -237,8 +237,10 @@ class SetupWizard:
                 return False
         elif page == "mic":
             label = self.mic_var.get()
-            idx = dict(self._mic_choices).get(label)
-            self.cfg["mic_device"] = idx
+            # _mic_choices is built in _page_mic; if rendering somehow failed
+            # we still want to save *something* sane rather than crash.
+            choices = dict(getattr(self, "_mic_choices", [("System Default", None)]))
+            self.cfg["mic_device"] = choices.get(label)
             self.cfg["mic_device_name"] = label
         elif page == "hotkey":
             self.cfg["hotkey"] = self.hotkey_var.get()
@@ -275,8 +277,19 @@ class SetupWizard:
 
 
 def run_wizard_if_first_run(defaults: dict, already_configured: bool) -> Optional[dict]:
-    """Show the wizard only on a true first run; otherwise return None."""
+    """Show the wizard only on a true first run; otherwise return None.
+
+    If Tk can't initialize (headless server, broken display), we silently
+    skip the wizard — the main GUI will then either fail to start with a
+    clearer error, or work if e.g. config was provided via env vars.
+    """
     if already_configured:
         return None
-    wizard = SetupWizard(defaults)
+    try:
+        wizard = SetupWizard(defaults)
+    except tk.TclError as e:
+        import logging
+        logging.getLogger("talkflow.wizard").warning(
+            "Skipping setup wizard — Tk unavailable: %s", e)
+        return None
     return wizard.run()

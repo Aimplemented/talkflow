@@ -32,6 +32,13 @@ import time
 from pathlib import Path
 from typing import Optional, Callable, Set
 
+# --doctor must work even if heavy deps (tkinter, sounddevice, pynput) are
+# missing — that's often *exactly* what the user is trying to diagnose.
+# Handle it before anything else can fail to import.
+if "--doctor" in sys.argv:
+    from doctor import run_doctor
+    sys.exit(run_doctor())
+
 import tkinter as tk
 from tkinter import ttk, messagebox
 
@@ -262,13 +269,24 @@ def load_config() -> dict:
 
 
 def save_config(cfg: dict) -> None:
-    """Save configuration to config.json."""
+    """Save configuration to config.json atomically.
+
+    Writes to a sibling .tmp file and renames into place so a crash mid-write
+    leaves the previous config intact instead of an empty file.
+    """
+    tmp = CONFIG_FILE.with_suffix(".json.tmp")
     try:
-        with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        with open(tmp, "w", encoding="utf-8") as f:
             json.dump(cfg, f, indent=2)
+        os.replace(tmp, CONFIG_FILE)
         log.debug("Config saved to %s", CONFIG_FILE)
     except Exception as e:
         log.error("Failed to save config: %s", e)
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except Exception:
+            pass
 
 
 # ---------------------------------------------------------------------------
@@ -1759,15 +1777,19 @@ def _check_macos_permissions():
 
 
 def main():
-    import sys as _sys
-    if "--doctor" in _sys.argv:
-        from doctor import run_doctor
-        return run_doctor()
+    # --doctor is handled at the top of this file before heavy imports;
+    # by the time we get here, that flag is impossible.
     _maybe_run_first_run_wizard()
     app = TalkFlowGUI()
+    # Force the root window to materialize before showing modal permission
+    # dialogs; otherwise messagebox can render off-screen on macOS.
+    try:
+        app.root.update_idletasks()
+    except Exception:
+        pass
     _check_macos_permissions()
     app.run()
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main() or 0)
