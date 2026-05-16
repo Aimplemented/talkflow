@@ -61,3 +61,39 @@ def open_microphone_settings() -> bool:
         return True
     except Exception:
         return False
+
+
+def open_input_monitoring_settings() -> bool:
+    """Input Monitoring is a SEPARATE permission from Accessibility on macOS.
+    pynput's global hotkey listener needs Input Monitoring to receive
+    key events from other apps. Without it, the hotkey silently never fires.
+    """
+    if not is_macos():
+        return False
+    try:
+        subprocess.Popen([
+            "open",
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent",
+        ])
+        return True
+    except Exception:
+        return False
+
+
+def check_input_monitoring_trusted() -> bool | None:
+    """Best-effort check for Input Monitoring permission.
+
+    Unlike Accessibility, macOS doesn't expose a clean public API for
+    Input Monitoring status. We use IOHIDCheckAccess if available — it
+    returns 0 (granted), 1 (denied), or 2 (unknown/not-yet-prompted).
+    Returns None if we can't determine.
+    """
+    if not is_macos():
+        return None
+    try:
+        # IOHIDCheckAccess lives in IOKit and is exposed via pyobjc-framework-IOKit
+        # which we don't require, so fall back gracefully.
+        from Quartz import CGPreflightListenEventAccess  # type: ignore
+        return bool(CGPreflightListenEventAccess())
+    except Exception:
+        return None

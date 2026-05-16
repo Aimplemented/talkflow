@@ -198,7 +198,7 @@ DEFAULT_CONFIG = {
     "groq_api_key": os.getenv("GROQ_API_KEY", ""),
 
     # Server settings (for self-hosted backend)
-    "server": os.getenv("TALKFLOW_SERVER", "YOUR_SERVER:9876"),
+    "server": os.getenv("TALKFLOW_SERVER", ""),
 
     # Hotkey settings - supports any key combo (e.g., "f9", "ctrl+win", "ctrl+shift+d")
     "hotkey": "f9",
@@ -440,63 +440,9 @@ class SystemTrayManager:
 
 
 # ---------------------------------------------------------------------------
-# Audio device enumeration
+# Audio device enumeration + smoke test
 # ---------------------------------------------------------------------------
-def list_microphones() -> list[dict]:
-    devices = []
-    try:
-        import sounddevice as sd
-        all_devs = sd.query_devices()
-        for i, d in enumerate(all_devs):
-            if d["max_input_channels"] > 0:
-                devices.append({
-                    "index": i,
-                    "name": d["name"],
-                    "channels": d["max_input_channels"],
-                    "rate": int(d["default_samplerate"]),
-                })
-    except Exception as e:
-        log.warning("Device enumeration failed: %s", e)
-    return devices
-
-
-# ---------------------------------------------------------------------------
-# Mic test
-# ---------------------------------------------------------------------------
-def test_microphone(device_index: Optional[int], duration: float = 3.0,
-                    on_level=None, on_done=None) -> None:
-    def _run():
-        try:
-            import sounddevice as sd
-            import numpy as np
-
-            frames = []
-
-            def callback(indata, frame_count, time_info, status):
-                frames.append(indata.copy())
-                if on_level:
-                    level = float(np.abs(indata).mean()) / 32768.0 * 10
-                    on_level(min(level, 1.0))
-
-            kwargs = dict(samplerate=16000, channels=1, dtype="int16",
-                          blocksize=1600, callback=callback)
-            if device_index is not None:
-                kwargs["device"] = device_index
-
-            with sd.InputStream(**kwargs):
-                time.sleep(duration)
-
-            total = sum(len(f) for f in frames)
-            if on_done:
-                if total > 0:
-                    on_done(True, f"✓ Captured {total} samples ({duration:.1f}s)")
-                else:
-                    on_done(False, "✗ No audio captured")
-        except Exception as e:
-            if on_done:
-                on_done(False, f"✗ Error: {e}")
-
-    threading.Thread(target=_run, daemon=True).start()
+from audio_devices import list_microphones, test_microphone  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -1775,20 +1721,25 @@ def _maybe_run_first_run_wizard():
         log.info("First-run wizard complete — config saved to %s", CONFIG_FILE)
 
 
-def _check_macos_accessibility():
-    """On macOS, warn if Accessibility permission is missing (keystroke injection
-    needs it). Offers to open the right System Settings pane."""
+def _check_macos_permissions():
+    """On macOS, warn if Accessibility or Input Monitoring permission is missing.
+
+    Accessibility: needed for keystroke injection (typing transcribed text).
+    Input Monitoring: needed for the global hotkey listener to fire at all.
+    Both are separate System Settings panes."""
     if platform.system() != "Darwin":
         return
     try:
         from macos_support import (
             check_accessibility_trusted,
+            check_input_monitoring_trusted,
             open_accessibility_settings,
+            open_input_monitoring_settings,
         )
     except Exception:
         return
-    trusted = check_accessibility_trusted()
-    if trusted is False:
+
+    if check_accessibility_trusted() is False:
         if messagebox.askyesno(
                 "Accessibility permission needed",
                 "TalkFlow needs Accessibility permission to type transcribed text\n"
@@ -1797,11 +1748,24 @@ def _check_macos_accessibility():
                 "(After enabling TalkFlow there, quit and relaunch this app.)"):
             open_accessibility_settings()
 
+    if check_input_monitoring_trusted() is False:
+        if messagebox.askyesno(
+                "Input Monitoring permission needed",
+                "TalkFlow needs Input Monitoring permission to detect your\n"
+                "push-to-talk hotkey when other apps are focused.\n\n"
+                "Without it, the hotkey will silently do nothing.\n\n"
+                "Open System Settings → Privacy & Security → Input Monitoring now?"):
+            open_input_monitoring_settings()
+
 
 def main():
+    import sys as _sys
+    if "--doctor" in _sys.argv:
+        from doctor import run_doctor
+        return run_doctor()
     _maybe_run_first_run_wizard()
     app = TalkFlowGUI()
-    _check_macos_accessibility()
+    _check_macos_permissions()
     app.run()
 
 

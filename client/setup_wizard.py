@@ -126,7 +126,7 @@ class SetupWizard:
                   font=("Segoe UI", 12, "bold")).pack(anchor="w", pady=(0, 12))
 
         try:
-            from gui import list_microphones, test_microphone
+            from audio_devices import list_microphones, test_microphone
         except Exception:
             list_microphones = lambda: []  # noqa
             test_microphone = None
