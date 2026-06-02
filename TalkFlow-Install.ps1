@@ -55,7 +55,7 @@ if (Test-Path "$srcClient\assets") {
 }
 # Sanity check: the DeskFlow delivery module must be present.
 if (-not (Test-Path "$TF_DIR\client\clipboard_injector.py")) {
-    Write-Host "  ERROR: clipboard_injector.py missing — source tree is incomplete." -ForegroundColor Red
+    Write-Host "  ERROR: clipboard_injector.py missing - source tree is incomplete." -ForegroundColor Red
     Read-Host "Press Enter to exit"
     exit 1
 }
@@ -136,7 +136,7 @@ Write-Host "  First run:" -ForegroundColor Cyan
 Write-Host "    1. Pick your transcription backend (Groq key or self-hosted server)" -ForegroundColor White
 Write-Host "    2. Choose your microphone and test it" -ForegroundColor White
 Write-Host "    3. Keep the hotkey on F9 (a bare function key won't leak to remotes)" -ForegroundColor White
-Write-Host "    4. Delivery is set to 'DeskFlow' — pastes to whichever screen has the cursor" -ForegroundColor White
+Write-Host "    4. Delivery is set to 'DeskFlow' - pastes to whichever screen has the cursor" -ForegroundColor White
 Write-Host "    5. Click Start, hold F9, speak, release" -ForegroundColor White
 Write-Host ""
 Write-Host "  DeskFlow reminders:" -ForegroundColor Cyan
