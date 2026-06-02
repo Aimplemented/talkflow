@@ -41,12 +41,20 @@ if not exist "%SRC%" (
     pause
     exit /b 1
 )
-copy /y "%SRC%\*.py" "%TF_DIR%\client\" >nul
-if exist "%SRC%\requirements.txt" copy /y "%SRC%\requirements.txt" "%TF_DIR%\client\" >nul
-if exist "%SRC%\assets" (
-    if not exist "%TF_DIR%\client\assets" mkdir "%TF_DIR%\client\assets"
-    xcopy /y /q "%SRC%\assets\*" "%TF_DIR%\client\assets\" >nul 2>&1
-    echo   assets copied
+:: Resolve both paths fully so we can detect "source == destination" (e.g. you
+:: extracted into a folder that IS the install dir on case-insensitive Windows).
+for %%I in ("%SRC%") do set "SRCFULL=%%~fI"
+for %%I in ("%TF_DIR%\client") do set "DSTFULL=%%~fI"
+if /i "%SRCFULL%"=="%DSTFULL%" (
+    echo   Already in the install location - skipping copy.
+) else (
+    copy /y "%SRC%\*.py" "%TF_DIR%\client\" >nul
+    if exist "%SRC%\requirements.txt" copy /y "%SRC%\requirements.txt" "%TF_DIR%\client\" >nul
+    if exist "%SRC%\assets" (
+        if not exist "%TF_DIR%\client\assets" mkdir "%TF_DIR%\client\assets"
+        xcopy /y /q "%SRC%\assets\*" "%TF_DIR%\client\assets\" >nul 2>&1
+        echo   assets copied
+    )
 )
 if not exist "%TF_DIR%\client\clipboard_injector.py" (
     echo   ERROR: clipboard_injector.py missing - source tree is incomplete.

@@ -41,17 +41,27 @@ if (-not (Test-Path $srcClient)) {
     Read-Host "Press Enter to exit"
     exit 1
 }
-# Copy every Python module so new files are picked up automatically.
-Copy-Item "$srcClient\*.py" "$TF_DIR\client\" -Force
-foreach ($f in (Get-ChildItem "$srcClient\*.py" | Select-Object -ExpandProperty Name)) {
-    Write-Host "  $f" -ForegroundColor Gray
-}
-if (Test-Path "$srcClient\requirements.txt") {
-    Copy-Item "$srcClient\requirements.txt" "$TF_DIR\client\" -Force
-}
-if (Test-Path "$srcClient\assets") {
-    Copy-Item "$srcClient\assets" "$TF_DIR\client\" -Recurse -Force
-    Write-Host "  assets" -ForegroundColor Gray
+# If the installer is already running from the target location (e.g. you cloned
+# into ~\talkflow and the install dir is ~\TalkFlow, which is the SAME folder on
+# case-insensitive Windows), there is nothing to copy.
+$destClient = Join-Path $TF_DIR "client"
+$srcFull = ([System.IO.Path]::GetFullPath($srcClient)).TrimEnd('\')
+$destFull = ([System.IO.Path]::GetFullPath($destClient)).TrimEnd('\')
+if ($srcFull -ieq $destFull) {
+    Write-Host "  Already in the install location - skipping copy." -ForegroundColor Gray
+} else {
+    # Copy every Python module so new files are picked up automatically.
+    Copy-Item "$srcClient\*.py" "$destClient\" -Force
+    foreach ($f in (Get-ChildItem "$srcClient\*.py" | Select-Object -ExpandProperty Name)) {
+        Write-Host "  $f" -ForegroundColor Gray
+    }
+    if (Test-Path "$srcClient\requirements.txt") {
+        Copy-Item "$srcClient\requirements.txt" "$destClient\" -Force
+    }
+    if (Test-Path "$srcClient\assets") {
+        Copy-Item "$srcClient\assets" "$destClient\" -Recurse -Force
+        Write-Host "  assets" -ForegroundColor Gray
+    }
 }
 # Sanity check: the DeskFlow delivery module must be present.
 if (-not (Test-Path "$TF_DIR\client\clipboard_injector.py")) {
