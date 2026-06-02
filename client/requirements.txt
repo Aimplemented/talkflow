@@ -14,6 +14,8 @@ websockets>=13.0        # WebSocket client for server communication
 
 # Input handling
 pynput>=1.7.6           # Global hotkey listener (cross-platform)
+pyperclip>=1.8.2        # Clipboard get/set for DeskFlow paste delivery
+                        #   Linux also needs: xclip or xsel (sudo apt install xclip)
 
 # GUI components (optional, for gui.py)
 pystray>=0.19.5         # System tray icon support

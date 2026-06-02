@@ -14,7 +14,7 @@ except ImportError:
     print("websockets package required: pip install websockets")
     raise
 
-from client import keystroke_injector
+from keystroke_injector import KeystrokeInjector
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -29,6 +29,7 @@ class TalkFlowClient:
         self.websocket = None
         self._running = False
         self._reconnect_delay = 1
+        self._injector = KeystrokeInjector()
 
     @property
     def uri(self) -> str:
@@ -65,7 +66,7 @@ class TalkFlowClient:
             if msg_type == "text":
                 text = data.get("data", "")
                 logger.info(f"Received text: {text[:50]}...")
-                keystroke_injector.inject_text(text)
+                self._injector.type_text(text)
 
         except json.JSONDecodeError:
             logger.warning(f"Invalid JSON message: {message}")

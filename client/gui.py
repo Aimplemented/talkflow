@@ -167,6 +167,15 @@ DEFAULT_CONFIG = {
     # Hotkey settings - supports any key combo (e.g., "f9", "ctrl+win", "ctrl+shift+d")
     "hotkey": "f9",
 
+    # Delivery mode: how transcribed text reaches its destination.
+    #   "local"          → type at the cursor on THIS machine (single-machine use)
+    #   "deskflow_paste" → copy to clipboard + paste, so DeskFlow forwards it to
+    #                      whichever screen currently has the cursor
+    "delivery_mode": "local",
+    # DeskFlow paste timing (milliseconds)
+    "paste_sync_delay_ms": 250,      # wait for DeskFlow to sync clipboard before paste
+    "paste_restore_delay_ms": 700,   # wait after paste before restoring old clipboard
+
     # Microphone settings
     "mic_device": None,
     "mic_device_name": "System Default",
@@ -961,7 +970,7 @@ class TalkFlowGUI:
     def _build_ui(self):
         root = self.root
 
-        # Header
+        # Header (always visible, above the tabs)
         header = ttk.Frame(root)
         header.pack(fill="x", padx=15, pady=(15, 5))
         ttk.Label(header, text="🎙 TalkFlow",
@@ -978,8 +987,19 @@ class TalkFlowGUI:
 
         ttk.Separator(root, orient="horizontal").pack(fill="x", padx=15, pady=5)
 
+        # Notebook: Settings + Dashboard tabs
+        self.notebook = ttk.Notebook(root)
+        self.notebook.pack(fill="both", expand=True, padx=10, pady=(0, 0))
+        settings_tab = ttk.Frame(self.notebook)
+        self.dashboard_tab = ttk.Frame(self.notebook)
+        self.notebook.add(settings_tab, text="  Settings  ")
+        self.notebook.add(self.dashboard_tab, text="  Dashboard  ")
+
+        # All settings sections live in the Settings tab
+        body = settings_tab
+
         # === Transcription Backend ===
-        backend_frame = ttk.LabelFrame(root, text="  Transcription  ", padding=10)
+        backend_frame = ttk.LabelFrame(body, text="  Transcription  ", padding=10)
         backend_frame.pack(fill="x", padx=15, pady=5)
 
         # Backend selection row
@@ -1014,7 +1034,7 @@ class TalkFlowGUI:
         self.backend_status.pack(fill="x", pady=(5, 0))
 
         # === Server (for self-hosted backend) ===
-        self.srv_frame = ttk.LabelFrame(root, text="  Server (Self-Hosted)  ", padding=10)
+        self.srv_frame = ttk.LabelFrame(body, text="  Server (Self-Hosted)  ", padding=10)
         self.srv_frame.pack(fill="x", padx=15, pady=5)
 
         row = ttk.Frame(self.srv_frame)
@@ -1034,7 +1054,7 @@ class TalkFlowGUI:
         self._update_backend_ui()
 
         # === Microphone ===
-        mic_frame = ttk.LabelFrame(root, text="  Microphone  ", padding=10)
+        mic_frame = ttk.LabelFrame(body, text="  Microphone  ", padding=10)
         mic_frame.pack(fill="x", padx=15, pady=5)
 
         row2 = ttk.Frame(mic_frame)
@@ -1061,7 +1081,7 @@ class TalkFlowGUI:
         self.mic_status.pack(fill="x", pady=(5, 0))
 
         # === Hotkey ===
-        hk_frame = ttk.LabelFrame(root, text="  Hotkey (Push-to-Talk)  ", padding=10)
+        hk_frame = ttk.LabelFrame(body, text="  Hotkey (Push-to-Talk)  ", padding=10)
         hk_frame.pack(fill="x", padx=15, pady=5)
 
         row4 = ttk.Frame(hk_frame)
@@ -1095,8 +1115,36 @@ class TalkFlowGUI:
         self.hotkey_status = ttk.Label(hk_frame, text="", font=("Segoe UI", 9))
         self.hotkey_status.pack(fill="x", pady=(5, 0))
 
+        # === Delivery (where the text goes) ===
+        delivery_frame = ttk.LabelFrame(body, text="  Delivery  ", padding=10)
+        delivery_frame.pack(fill="x", padx=15, pady=5)
+
+        self.delivery_mode_var = tk.StringVar(
+            value=self.config.get("delivery_mode", "local"))
+
+        ttk.Radiobutton(
+            delivery_frame, text="Local — type at the cursor on this machine",
+            variable=self.delivery_mode_var, value="local",
+            command=self._on_delivery_change).pack(anchor="w")
+
+        ttk.Radiobutton(
+            delivery_frame,
+            text="DeskFlow — paste to whichever screen has the cursor",
+            variable=self.delivery_mode_var, value="deskflow_paste",
+            command=self._on_delivery_change).pack(anchor="w")
+
+        ttk.Label(
+            delivery_frame,
+            text="DeskFlow mode copies the transcript and pastes it, so DeskFlow "
+                 "forwards it to the active screen. Run TalkFlow on your DeskFlow "
+                 "server (the machine with the keyboard/mouse/mic). Use a bare "
+                 "function key (F8/F9) as the hotkey so it doesn't leak to the "
+                 "remote screen.",
+            font=("Segoe UI", 8), foreground="gray", wraplength=460,
+            justify="left").pack(fill="x", pady=(6, 0))
+
         # === Preferences ===
-        pref_frame = ttk.LabelFrame(root, text="  Preferences  ", padding=10)
+        pref_frame = ttk.LabelFrame(body, text="  Preferences  ", padding=10)
         pref_frame.pack(fill="x", padx=15, pady=5)
 
         # Row 1: Minimize to tray + Start minimized
@@ -1134,11 +1182,11 @@ class TalkFlowGUI:
             variable=self.auto_start_var,
             command=self._on_pref_change).pack(side="left")
 
-        # === Controls ===
+        # === Controls (always visible, below the tabs) ===
         ttk.Separator(root, orient="horizontal").pack(fill="x", padx=15, pady=8)
 
         ctrl_frame = ttk.Frame(root)
-        ctrl_frame.pack(fill="x", padx=15, pady=5)
+        ctrl_frame.pack(fill="x", padx=15, pady=(0, 12))
 
         self.start_btn = ttk.Button(ctrl_frame, text="▶  Start TalkFlow",
                                      command=self._toggle_service)
@@ -1148,14 +1196,49 @@ class TalkFlowGUI:
                                     command=self._save_settings)
         self.save_btn.pack(side="right")
 
-        # === Log ===
-        log_frame = ttk.LabelFrame(root, text="  Log  ", padding=5)
-        log_frame.pack(fill="both", expand=True, padx=15, pady=(5, 15))
+        # === Dashboard tab ===
+        self._build_dashboard_tab(self.dashboard_tab)
+
+    def _build_dashboard_tab(self, parent):
+        """Build the live status dashboard: status cards + transcript feed."""
+        # --- Status cards ---
+        cards = ttk.LabelFrame(parent, text="  Status  ", padding=10)
+        cards.pack(fill="x", padx=15, pady=(10, 5))
+
+        grid = ttk.Frame(cards)
+        grid.pack(fill="x")
+        grid.columnconfigure(1, weight=1)
+
+        def _row(r, label):
+            ttk.Label(grid, text=label, font=("Segoe UI", 9, "bold")).grid(
+                row=r, column=0, sticky="w", padx=(0, 12), pady=2)
+            val = ttk.Label(grid, text="—", font=("Segoe UI", 9))
+            val.grid(row=r, column=1, sticky="w", pady=2)
+            return val
+
+        self.dash_service = _row(0, "Service")
+        self.dash_backend = _row(1, "Backend")
+        self.dash_delivery = _row(2, "Delivery")
+        self.dash_hotkey = _row(3, "Hotkey")
+        self.dash_health = _row(4, "Server health")
+        self.dash_last = _row(5, "Last delivery")
+
+        # Manual server health check
+        btns = ttk.Frame(cards)
+        btns.pack(fill="x", pady=(8, 0))
+        ttk.Button(btns, text="↻ Check server health",
+                   command=self._dashboard_health_check).pack(side="left")
+
+        # --- Activity & transcript feed ---
+        log_frame = ttk.LabelFrame(parent, text="  Activity & Transcripts  ", padding=5)
+        log_frame.pack(fill="both", expand=True, padx=15, pady=(5, 12))
 
         self.log_text = tk.Text(log_frame, height=8, wrap="word",
                                  font=("Consolas", 9), bg="#1e1e1e", fg="#cccccc",
                                  insertbackground="#cccccc")
         self.log_text.pack(fill="both", expand=True)
+
+        self._refresh_dashboard()
 
     def _log(self, msg: str):
         ts = time.strftime("%H:%M:%S")
@@ -1246,6 +1329,58 @@ class TalkFlowGUI:
         self.config["play_sounds"] = self.play_sounds_var.get()
         self.config["auto_start_on_launch"] = self.auto_start_var.get()
         save_config(self.config)
+
+    def _on_delivery_change(self):
+        """Handle delivery-mode radio change - auto-save and refresh dashboard."""
+        self.config["delivery_mode"] = self.delivery_mode_var.get()
+        save_config(self.config)
+        mode = "DeskFlow paste" if self.config["delivery_mode"] == "deskflow_paste" else "Local cursor"
+        self._log(f"Delivery mode: {mode}")
+        self._refresh_dashboard()
+
+    # ------------------------------------------------------------------
+    # Dashboard
+    # ------------------------------------------------------------------
+    def _refresh_dashboard(self):
+        """Update the dashboard status labels from current state/config."""
+        if not hasattr(self, "dash_service"):
+            return
+
+        running = getattr(self, "is_running", False)
+        self.dash_service.config(
+            text="● Running" if running else "● Stopped",
+            foreground="green" if running else "gray")
+
+        backend = self.config.get("backend", "groq")
+        self.dash_backend.config(
+            text="Groq Cloud" if backend == "groq" else f"Self-hosted ({self.config.get('server', '')})")
+
+        mode = self.config.get("delivery_mode", "local")
+        if mode == "deskflow_paste":
+            self.dash_delivery.config(text="DeskFlow — paste to active screen",
+                                      foreground="#0d9488")
+        else:
+            self.dash_delivery.config(text="Local — type at cursor", foreground="black")
+
+        self.dash_hotkey.config(text=self.config.get("hotkey", "f9"))
+
+    def _dashboard_health_check(self):
+        """Run a server health check and show the result on the dashboard."""
+        backend = self.config.get("backend", "groq")
+        if backend == "groq":
+            self.dash_health.config(text="Groq Cloud (no local health endpoint)",
+                                    foreground="gray")
+            return
+
+        self.dash_health.config(text="Checking…", foreground="orange")
+
+        def done(ok, msg):
+            self.root.after(0, lambda: (
+                self.dash_health.config(text=msg, foreground="green" if ok else "red"),
+                self._log(msg),
+            ))
+
+        test_server(self.server_var.get(), on_done=done)
 
     # ------------------------------------------------------------------
     # Backend selection
@@ -1441,7 +1576,9 @@ class TalkFlowGUI:
         self.config["hotkey"] = self.hotkey_var.get().strip()
         self.config["mic_device"] = self._get_device_index()
         self.config["mic_device_name"] = self.mic_var.get()
+        self.config["delivery_mode"] = self.delivery_mode_var.get()
         save_config(self.config)
+        self._refresh_dashboard()
         self._log("Settings saved ✓")
 
     # ------------------------------------------------------------------
@@ -1460,9 +1597,14 @@ class TalkFlowGUI:
             from audio_capture import AudioCapture
             from hotkey_listener import HotkeyListener
             from keystroke_injector import KeystrokeInjector
+            from clipboard_injector import ClipboardInjector
 
             self._audio = AudioCapture()
             self._injector = KeystrokeInjector()
+            self._clipboard_injector = ClipboardInjector(
+                sync_delay_ms=int(self.config.get("paste_sync_delay_ms", 250)),
+                restore_delay_ms=int(self.config.get("paste_restore_delay_ms", 700)),
+            )
             self._server_url = self.config["server"]
             self._is_recording = False
             self._last_text: str = ""          # for punctuation continuity
@@ -1480,7 +1622,10 @@ class TalkFlowGUI:
             self.start_btn.config(text="⏹  Stop TalkFlow")
             self.status_label.config(text="● Ready", foreground="green")
             self._update_tray_status("Ready")
+            self._refresh_dashboard()
             self._log(f"TalkFlow started — hold {self.config['hotkey']} to talk")
+            if self.config.get("delivery_mode") == "deskflow_paste":
+                self._log("DeskFlow mode: transcripts paste to the active screen")
 
             self.server_entry.config(state="disabled")
             self.mic_combo.config(state="disabled")
@@ -1508,6 +1653,7 @@ class TalkFlowGUI:
         self.start_btn.config(text="▶  Start TalkFlow")
         self.status_label.config(text="● Stopped", foreground="gray")
         self._update_tray_status("Stopped")
+        self._refresh_dashboard()
         self._log("TalkFlow stopped")
 
         self.server_entry.config(state="normal")
@@ -1634,20 +1780,38 @@ class TalkFlowGUI:
             text="● Ready", foreground="green"))
         self.root.after(0, lambda: self._update_tray_status("Ready"))
 
-        # Restore focus to the original window BEFORE injecting text
-        _restore_foreground_window(target_hwnd)
-
-        # Small delay to let focus settle
-        time.sleep(0.1)
+        delivery_mode = self.config.get("delivery_mode", "local")
 
         try:
             cleaned_text = clean_transcription(text)
             # Update context for next chunk (punctuation continuity)
             self._last_text = (self._last_text + " " + cleaned_text).strip()[-900:]
             self._last_text_time = time.time()
-            self._injector.type_text(cleaned_text + " ")
+
+            if delivery_mode == "deskflow_paste":
+                # Don't restore local focus — we want the paste to land on
+                # whichever screen DeskFlow currently controls.
+                ok = self._clipboard_injector.deliver(cleaned_text + " ")
+                self._mark_delivery("DeskFlow paste", cleaned_text, ok)
+            else:
+                # Local: restore focus to the original window, then type.
+                _restore_foreground_window(target_hwnd)
+                time.sleep(0.1)  # let focus settle
+                self._injector.type_text(cleaned_text + " ")
+                self._mark_delivery("Local cursor", cleaned_text, True)
         except Exception as exc:
             self.root.after(0, lambda: self._log(f"✗ Injection failed: {exc}"))
+            self._mark_delivery("error", text, False)
+
+    def _mark_delivery(self, how: str, text: str, ok: bool):
+        """Record the most recent delivery on the dashboard."""
+        ts = time.strftime("%H:%M:%S")
+        preview = (text[:40] + "…") if len(text) > 40 else text
+        status = "✓" if ok else "✗"
+        if hasattr(self, "dash_last"):
+            self.root.after(0, lambda: self.dash_last.config(
+                text=f"{status} {ts} via {how}: {preview}",
+                foreground="green" if ok else "red"))
 
     def _transcribe_groq(self, audio_bytes: bytes, initial_prompt: str = "") -> dict:
         """Transcribe using Groq Cloud API."""

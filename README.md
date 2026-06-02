@@ -84,8 +84,9 @@ Hold your hotkey, speak, release — transcribed text appears wherever your curs
 | Component | Location | Platform | Description |
 |-----------|----------|----------|-------------|
 | **Server** | `server/` | Linux + Docker | Faster-Whisper transcription (GPU) |
-| **Client GUI** | `client/gui.py` | Windows/macOS/Linux | Full-featured GUI with system tray |
+| **Client GUI** | `client/gui.py` | Windows/macOS/Linux | GUI with Settings + Dashboard tabs and system tray |
 | **Client CLI** | `client/client.py` | All platforms | Command-line interface |
+| **Clipboard delivery** | `client/clipboard_injector.py` | Windows/macOS/Linux | DeskFlow paste delivery (copy → sync → paste → restore) |
 | **Installer Scripts** | `TalkFlow-Install.*` | Windows | Automated Python environment setup |
 | **Build System** | `client/build_installer.py` | Windows | PyInstaller + Inno Setup |
 
@@ -233,15 +234,26 @@ python3 gui.py
 
 ```json
 {
+  "backend": "groq",
   "server": "192.168.1.100:9876",
   "hotkey": "f9",
   "mic_device": null,
   "mic_device_name": "System Default",
+  "delivery_mode": "local",
+  "paste_sync_delay_ms": 250,
+  "paste_restore_delay_ms": 700,
   "minimize_to_tray": true,
   "play_sounds": true,
   "auto_start_on_launch": false
 }
 ```
+
+`delivery_mode` controls where the transcript lands:
+
+| Value | Behavior |
+|-------|----------|
+| `local` | Type the text at the cursor on the machine running TalkFlow (single-machine use). |
+| `deskflow_paste` | Copy the text and paste it, so **DeskFlow** forwards it to whichever screen currently has the cursor. See [DeskFlow Integration](#deskflow-integration). |
 
 ### Hotkey Options
 
@@ -256,6 +268,86 @@ TalkFlow supports any key combination:
 | Ctrl+Alt+V | `ctrl+alt+v` | Voice-themed shortcut |
 
 Use the **Record Hotkey** button in the GUI to capture any key combination.
+
+---
+
+## DeskFlow Integration
+
+TalkFlow is designed to pair with [DeskFlow](https://github.com/deskflow/deskflow)
+(the open-source software KVM, formerly Synergy). The goal: **one keyboard, one
+mouse, one microphone** on your main machine, but dictation that lands on
+*whichever screen your cursor is currently on*.
+
+### How it works
+
+Run TalkFlow on your **DeskFlow server** — the machine that physically has the
+keyboard, mouse, and microphone (the "primary"). Set delivery mode to
+**DeskFlow** (`deskflow_paste`). Then:
+
+1. You hold the hotkey and speak. Audio is captured on the server and
+   transcribed (Groq or your GPU server).
+2. TalkFlow copies the transcript to the clipboard. DeskFlow **syncs the
+   clipboard** to the screen your cursor is on.
+3. TalkFlow sends a paste keystroke (Ctrl+V). DeskFlow's server-side keyboard
+   hook **forwards injected keystrokes from the primary**, so the paste is
+   delivered to the active remote screen — and the text appears there.
+
+This is the same clipboard-paste technique used by tools like Wispr Flow,
+combined with DeskFlow's built-in clipboard sync and input forwarding. No extra
+agent is required on the client machines — DeskFlow does the routing.
+
+```
+   ┌─────────────────────────── DeskFlow PRIMARY (your PC) ──────────────────────────┐
+   │  keyboard + mouse + mic                                                          │
+   │  ┌──────────┐   hold hotkey    ┌───────────┐   transcript    ┌───────────────┐  │
+   │  │  TalkFlow│ ───────────────▶ │ transcribe│ ──────────────▶ │ clipboard +   │  │
+   │  │  (server)│                  │(Groq/GPU) │                 │ paste (Ctrl+V)│  │
+   │  └──────────┘                  └───────────┘                 └──────┬────────┘  │
+   └─────────────────────────────────────────────────────────────────────┼──────────┘
+                                                                          │ DeskFlow
+                                  clipboard sync + forwarded paste ───────┤ forwards to
+                                                                          ▼ active screen
+                          ┌─────────────────┐               ┌─────────────────┐
+                          │   Mac Mini      │      or       │  Ubuntu box     │
+                          │ (DeskFlow client)│              │(DeskFlow client)│
+                          │  text pasted ✓  │               │  text pasted ✓  │
+                          └─────────────────┘               └─────────────────┘
+```
+
+### Setup checklist
+
+1. **Install + run TalkFlow on the DeskFlow primary** (the machine with the
+   mic/keyboard/mouse). On the other screens you only need DeskFlow running as a
+   client — no TalkFlow needed.
+2. In TalkFlow's **Settings → Delivery**, choose **DeskFlow — paste to whichever
+   screen has the cursor**.
+3. Make sure DeskFlow's **clipboard sharing is enabled** (it is by default).
+4. **Pick a bare function-key hotkey (F8 / F9).** Because the primary forwards
+   all keystrokes to the active screen, a letter-based combo would "leak" to the
+   remote machine while you hold it. A lone function key is harmless there.
+5. **Cross-OS modifier mapping:** if your active screen runs a different OS than
+   the primary (e.g. a Windows primary pasting to macOS), enable DeskFlow's
+   Cmd↔Ctrl mapping for that screen so the forwarded Ctrl+V becomes Cmd+V.
+
+### Tuning the paste timing
+
+If pastes occasionally arrive empty or land before the clipboard has synced,
+increase `paste_sync_delay_ms` (the wait between copy and paste). If your real
+clipboard gets clobbered, increase `paste_restore_delay_ms`.
+
+### Live dashboard
+
+The desktop GUI has a **Dashboard** tab showing live status: service
+running/stopped, active backend, delivery mode, hotkey, a manual server-health
+check, and a feed of recent transcripts with their delivery result.
+
+### Network fallback (advanced)
+
+For screens where DeskFlow forwarding misbehaves, `client/network_server.py` and
+`client/network_client.py` provide an optional WebSocket path: the server
+broadcasts transcribed text and a small client on each machine injects it
+locally. This is independent of DeskFlow but requires running a TalkFlow client
+on each target. The clipboard/DeskFlow path above is the recommended default.
 
 ---
 
