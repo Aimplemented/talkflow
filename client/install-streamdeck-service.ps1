@@ -71,21 +71,27 @@ if ($Uninstall) {
     return
 }
 
-# ---- Locate pythonw.exe ---------------------------------------------------
-$PythonW = $null
-$pyCmd = Get-Command pythonw.exe -ErrorAction SilentlyContinue
+# ---- Locate python.exe / pythonw.exe --------------------------------------
+# pythonw.exe runs the daemon with no console flash; python.exe is used for the
+# one-shot `setup` call (so we can see its output).
+$PythonExe = $null
+$PythonW   = $null
+$pyCmd = Get-Command python.exe -ErrorAction SilentlyContinue
 if ($pyCmd) {
-    $PythonW = $pyCmd.Source
-} else {
-    # Fall back to deriving pythonw from python on PATH
-    $py = Get-Command python.exe -ErrorAction SilentlyContinue
-    if ($py) {
-        $candidate = Join-Path (Split-Path $py.Source) "pythonw.exe"
-        if (Test-Path $candidate) { $PythonW = $candidate }
-    }
+    $PythonExe = $pyCmd.Source
+    $candidate = Join-Path (Split-Path $pyCmd.Source) "pythonw.exe"
+    if (Test-Path $candidate) { $PythonW = $candidate }
 }
+$pywCmd = Get-Command pythonw.exe -ErrorAction SilentlyContinue
+if (-not $PythonW -and $pywCmd) { $PythonW = $pywCmd.Source }
+if (-not $PythonExe -and $pywCmd) {
+    $candidate = Join-Path (Split-Path $pywCmd.Source) "python.exe"
+    if (Test-Path $candidate) { $PythonExe = $candidate }
+}
+if (-not $PythonW)   { $PythonW = $PythonExe }   # fall back to console python
+if (-not $PythonExe) { $PythonExe = $PythonW }
 if (-not $PythonW) {
-    throw "Could not find pythonw.exe on PATH. Install Python (with 'Add to PATH') and retry."
+    throw "Could not find python.exe/pythonw.exe on PATH. Install Python (with 'Add to PATH') and retry."
 }
 
 if (-not (Test-Path $DaemonPath)) {
@@ -100,31 +106,29 @@ if ($Backend -eq "server" -and -not $Server) {
     throw "-Server HOST:PORT is required for -Backend server."
 }
 
-# Persist the key as a user env var (the daemon reads GROQ_API_KEY).
-if ($GroqKey) {
-    [Environment]::SetEnvironmentVariable("GROQ_API_KEY", $GroqKey, "User")
-    $env:GROQ_API_KEY = $GroqKey
-    Write-Host "Stored GROQ_API_KEY as a per-user environment variable." -ForegroundColor Green
-}
-
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
-# ---- Build the task action ------------------------------------------------
-# Resolve the key we'll actually use (param wins, else existing env var).
+# ---- Persist settings into the daemon's config (set ONCE) -----------------
+# The daemon reads %LOCALAPPDATA%\TalkFlow\config.json on startup, so we store
+# the key/mic/remote target there instead of baking them into the task command.
+# This means changing the key later is just another `setup` call — no reinstall,
+# and you never have to find and paste the key again.
 $EffectiveKey = if ($GroqKey) { $GroqKey } else { $env:GROQ_API_KEY }
+$setupArgs = @($DaemonPath, "setup", "--backend", $Backend)
+if ($Backend -eq "server") { $setupArgs += @("--server", $Server) }
+if ($Device -ge 0)         { $setupArgs += @("--device", "$Device") }
+if ($RemotePaste)          { $setupArgs += @("--remote-paste", $RemotePaste) }
+if ($EffectiveKey)         { $setupArgs += @("--groq-key", $EffectiveKey) }
+$setupArgs += @("--port", "$Port")
+& $PythonExe @setupArgs
+if ($LASTEXITCODE -ne 0) { throw "Failed to write TalkFlow config (setup exited $LASTEXITCODE)." }
 
+# ---- Build the task action ------------------------------------------------
+# Only operational flags here; everything else comes from config.json.
 $argList = @(
     "`"$DaemonPath`"", "daemon",
-    "--backend", $Backend,
-    "--port", "$Port",
     "--log-file", "`"$LogFile`""
 )
-if ($Backend -eq "server") { $argList += @("--server", $Server) }
-if ($Device -ge 0)         { $argList += @("--device", "$Device") }
-if ($RemotePaste)          { $argList += @("--remote-paste", $RemotePaste) }
-# Pass the key directly: Task Scheduler does not reliably inherit a freshly-set
-# user environment variable, so relying on GROQ_API_KEY alone can 401.
-if ($Backend -eq "groq" -and $EffectiveKey) { $argList += @("--groq-key", $EffectiveKey) }
 $Arguments = $argList -join " "
 
 $action  = New-ScheduledTaskAction -Execute $PythonW -Argument $Arguments -WorkingDirectory $ScriptDir
@@ -159,6 +163,10 @@ Write-Host "Registered scheduled task: $TaskName" -ForegroundColor Green
 Write-Host "  Python : $PythonW"
 Write-Host "  Args   : $Arguments"
 Write-Host "  Log    : $LogFile"
+Write-Host "  Config : $(Join-Path $LogDir 'config.json')  (key/mic/remote live here)"
+Write-Host "  Tip    : change settings later without reinstalling, e.g.:"
+Write-Host "           python streamdeck_daemon.py setup --device 5"
+Write-Host "           python streamdeck_daemon.py setup --show"
 
 # ---- Start it now ---------------------------------------------------------
 Start-ScheduledTask -TaskName $TaskName

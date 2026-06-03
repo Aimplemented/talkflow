@@ -28,9 +28,19 @@ cannot hold a recording open between two presses.  We therefore split into:
 
 Usage
 -----
-Run the daemon once (e.g. at login) on the PC:
+Save your settings ONCE (key/mic/remote target are stored in a per-user config
+file, so you never have to find and re-paste the key again):
 
-    python streamdeck_daemon.py daemon --backend groq --groq-key gsk_xxx
+    python streamdeck_daemon.py setup --groq-key gsk_xxx --device 5 \
+        --remote-paste 192.168.1.123:9879
+    python streamdeck_daemon.py setup --show        # view current config
+
+Then run the daemon on the PC with NO flags — it reads the config:
+
+    python streamdeck_daemon.py daemon
+
+CLI flags still work and override the saved config for one-off runs:
+
     python streamdeck_daemon.py daemon --backend server --server 192.168.1.50:9876
 
 Point your Stream Deck button (System > Open, or a "Run command" plugin) at:
@@ -73,6 +83,51 @@ TRANSCRIBE_TIMEOUT = 30.0
 REMOTE_PASTE_TIMEOUT = 5.0
 DEFAULT_PORT = 9878
 DEFAULT_GROQ_KEY = os.getenv("GROQ_API_KEY", "")
+
+
+# ---------------------------------------------------------------------------
+# Persistent config — so you set the API key (and mic, remote target) ONCE.
+# ---------------------------------------------------------------------------
+# The daemon reads this file on startup; CLI flags override it.  This means a
+# bare `python streamdeck_daemon.py daemon` just works after a one-time setup,
+# and you never have to hunt down / re-paste your Groq key again.
+def config_path() -> str:
+    """Stable per-user config location, created on demand."""
+    if platform.system() == "Windows":
+        base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")
+        return os.path.join(base, "TalkFlow", "config.json")
+    base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(base, "talkflow", "config.json")
+
+
+def load_config() -> dict:
+    """Return the saved config dict, or {} if none / unreadable."""
+    path = config_path()
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return data if isinstance(data, dict) else {}
+    except FileNotFoundError:
+        return {}
+    except Exception as exc:
+        log.warning("Could not read config %s: %s", path, exc)
+        return {}
+
+
+def save_config(updates: dict) -> str:
+    """Merge *updates* (dropping None values) into the config file. Returns path."""
+    path = config_path()
+    cfg = load_config()
+    cfg.update({k: v for k, v in updates.items() if v is not None})
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(cfg, fh, indent=2)
+    try:
+        os.chmod(path, 0o600)  # the file holds an API key — keep it private
+    except Exception:
+        pass
+    return path
+
 
 # Daemon states
 IDLE = "idle"
@@ -393,8 +448,8 @@ def list_input_devices() -> None:
         mark = "  <- default" if idx == default_in else ""
         print(f"  {idx:>3}  {dev['max_input_channels']:>2}  "
               f"{int(dev['default_samplerate']):>6}  {dev['name']}{mark}")
-    print("\nUse a specific mic by reinstalling the service with -Device <IDX>, e.g.:")
-    print("  install-streamdeck-service.ps1 -GroqKey gsk_... -Device 2")
+    print("\nLock in a specific mic once (no reinstall needed), e.g.:")
+    print("  python streamdeck_daemon.py setup --device 5")
 
 
 # ---------------------------------------------------------------------------
@@ -403,25 +458,40 @@ def main() -> None:
         description="TalkFlow Stream Deck command trigger (DeskFlow/Wayland safe)")
     sub = p.add_subparsers(dest="command", required=True)
 
+    # Defaults are None so we can distinguish "flag not given" from a real value
+    # and fall back to the saved config (see resolution below).
     d = sub.add_parser("daemon", help="Run the recording daemon (on the PC with the mic)")
-    d.add_argument("--backend", "-b", choices=["groq", "server"], default="groq")
-    d.add_argument("--groq-key", "-g", default=DEFAULT_GROQ_KEY, metavar="KEY",
-                   help="Groq API key (or set GROQ_API_KEY)")
-    d.add_argument("--server", "-s", default="", metavar="HOST:PORT")
+    d.add_argument("--backend", "-b", choices=["groq", "server"], default=None)
+    d.add_argument("--groq-key", "-g", default=None, metavar="KEY",
+                   help="Groq API key (saved by `setup`; or set GROQ_API_KEY)")
+    d.add_argument("--server", "-s", default=None, metavar="HOST:PORT")
     d.add_argument("--device", "-d", type=int, default=None, metavar="INDEX",
                    help="Input device index (default: system default)")
-    d.add_argument("--sync-delay", type=int, default=250, metavar="MS",
+    d.add_argument("--sync-delay", type=int, default=None, metavar="MS",
                    help="Delay before paste so DeskFlow can sync the clipboard")
-    d.add_argument("--restore-delay", type=int, default=700, metavar="MS")
-    d.add_argument("--remote-paste", default="", metavar="HOST:PORT",
+    d.add_argument("--restore-delay", type=int, default=None, metavar="MS")
+    d.add_argument("--remote-paste", default=None, metavar="HOST:PORT",
                    help="Send transcripts to a paste_helper on the active remote "
                         "screen (the AI5090) instead of relying on DeskFlow's "
                         "clipboard/keystroke forwarding. Falls back to local "
                         "clipboard paste if unreachable. Port defaults to 9879.")
-    d.add_argument("--port", "-p", type=int, default=DEFAULT_PORT)
+    d.add_argument("--port", "-p", type=int, default=None)
     d.add_argument("--log-file", default="", metavar="PATH",
                    help="Append logs to this file (useful when run hidden as a service)")
     d.add_argument("--verbose", "-v", action="store_true")
+
+    # One-time setup: save the API key / mic / remote target so you never have
+    # to pass them again.  `python streamdeck_daemon.py setup --groq-key gsk_...`
+    st = sub.add_parser("setup", help="Save config (Groq key, mic, remote paste) so "
+                                      "you set it ONCE — then run `daemon` with no flags")
+    st.add_argument("--backend", "-b", choices=["groq", "server"])
+    st.add_argument("--groq-key", "-g", metavar="KEY")
+    st.add_argument("--server", "-s", metavar="HOST:PORT")
+    st.add_argument("--device", "-d", type=int, metavar="INDEX")
+    st.add_argument("--remote-paste", metavar="HOST:PORT")
+    st.add_argument("--port", "-p", type=int)
+    st.add_argument("--show", action="store_true",
+                    help="Print the current saved config and its path, then exit")
 
     for name, help_text in (("toggle", "Start if idle, stop+transcribe if recording"),
                             ("start", "Begin recording"),
@@ -439,6 +509,27 @@ def main() -> None:
         list_input_devices()
         return
 
+    if args.command == "setup":
+        if args.show:
+            cfg = load_config()
+            shown = dict(cfg)
+            if shown.get("groq_key"):  # never print the full secret
+                shown["groq_key"] = shown["groq_key"][:6] + "…" + shown["groq_key"][-4:]
+            print(f"Config file: {config_path()}")
+            print(json.dumps(shown, indent=2, ensure_ascii=False)
+                  if shown else "(empty — run setup to populate)")
+            return
+        updates = {k: getattr(args, k) for k in
+                   ("backend", "groq_key", "server", "device", "remote_paste", "port")}
+        if not any(v is not None for v in updates.values()):
+            p.error("nothing to save — pass at least one of "
+                    "--groq-key/--device/--remote-paste/--backend/--server/--port "
+                    "(or --show to view current config)")
+        path = save_config(updates)
+        print(f"Saved config to {path}")
+        print("You can now run the daemon with no flags:  python streamdeck_daemon.py daemon")
+        return
+
     if args.command == "daemon":
         if args.verbose:
             logging.getLogger().setLevel(logging.DEBUG)
@@ -450,15 +541,39 @@ def main() -> None:
             fh.setFormatter(logging.Formatter(
                 "%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
             logging.getLogger().addHandler(fh)
-        if args.backend == "server" and not args.server:
-            p.error("--server is required when using --backend server")
-        if args.backend == "groq" and not args.groq_key:
-            p.error("--groq-key is required when using --backend groq (or set GROQ_API_KEY)")
+
+        # Resolve each setting: CLI flag → saved config → built-in default.
+        cfg = load_config()
+
+        def resolve(name: str, default):
+            val = getattr(args, name)
+            if val is not None:
+                return val
+            if cfg.get(name) is not None:
+                return cfg[name]
+            return default
+
+        backend = resolve("backend", "groq")
+        server = resolve("server", "")
+        # Groq key precedence: flag → config → GROQ_API_KEY env var.
+        groq_key = args.groq_key or cfg.get("groq_key") or DEFAULT_GROQ_KEY
+        device = resolve("device", None)
+        sync_delay = resolve("sync_delay", 250)
+        restore_delay = resolve("restore_delay", 700)
+        remote_paste = resolve("remote_paste", "")
+        port = resolve("port", DEFAULT_PORT)
+
+        if backend == "server" and not server:
+            p.error("--server is required when using --backend server "
+                    "(set it once with: streamdeck_daemon.py setup --backend server --server HOST:PORT)")
+        if backend == "groq" and not groq_key:
+            p.error("No Groq key found. Set it once with:\n"
+                    "    python streamdeck_daemon.py setup --groq-key gsk_...")
         daemon = TalkFlowDaemon(
-            backend=args.backend, server_url=args.server, groq_key=args.groq_key,
-            device=args.device, sync_delay_ms=args.sync_delay,
-            restore_delay_ms=args.restore_delay, port=args.port,
-            remote_paste=args.remote_paste,
+            backend=backend, server_url=server, groq_key=groq_key,
+            device=device, sync_delay_ms=sync_delay,
+            restore_delay_ms=restore_delay, port=port,
+            remote_paste=remote_paste,
         )
         daemon.serve()
     else:
