@@ -135,6 +135,30 @@ RECORDING = "recording"
 PROCESSING = "processing"
 
 
+def _pcm_peak(pcm: bytes) -> int:
+    """Peak absolute amplitude (0..32767) of int16 PCM, for level diagnostics."""
+    if not pcm:
+        return 0
+    try:
+        import numpy as np
+        return int(np.abs(np.frombuffer(pcm, dtype=np.int16)).max())
+    except Exception:
+        import array
+        a = array.array("h")
+        a.frombytes(pcm[: len(pcm) - (len(pcm) % 2)])
+        return max((abs(x) for x in a), default=0)
+
+
+def _device_name(device: int | None) -> str:
+    """Human-readable name of the input device the daemon will actually open."""
+    try:
+        import sounddevice as sd
+        idx = device if device is not None else sd.default.device[0]
+        return f"#{idx} {sd.query_devices(idx)['name']}"
+    except Exception:
+        return "system default" if device is None else f"#{device}"
+
+
 def _send_remote_paste(host: str, port: int, text: str,
                        timeout: float = REMOTE_PASTE_TIMEOUT) -> bool:
     """Ship *text* to a paste_helper on the remote screen (the AI5090).
@@ -218,7 +242,9 @@ class TalkFlowDaemon:
 
         from audio_capture import AudioCapture
         from clipboard_injector import ClipboardInjector
+        self._device = device
         self._audio = AudioCapture(device=device)
+        log.info("🎙  Mic: %s", _device_name(device))
         self._injector = ClipboardInjector(sync_delay_ms=sync_delay_ms,
                                            restore_delay_ms=restore_delay_ms)
         self._state = IDLE
@@ -269,7 +295,13 @@ class TalkFlowDaemon:
             return "skipped: too short"
 
         duration_s = len(audio_bytes) / (16000 * 2)
-        log.info("⏹  Stopped (%.1fs) — transcribing…", duration_s)
+        peak = _pcm_peak(audio_bytes)
+        pct = peak * 100 // 32767
+        log.info("⏹  Stopped (%.1fs) — peak level %d%% — transcribing…", duration_s, pct)
+        if pct < 2:
+            log.warning("⚠  Audio is essentially silent (peak %d%%). Whisper may "
+                        "hallucinate text like 'thank you'. Check the mic with: "
+                        "python streamdeck_daemon.py mictest", pct)
         threading.Thread(target=self._process, args=(audio_bytes,),
                          daemon=True).start()
         return "transcribing"
@@ -425,6 +457,33 @@ def send_command(command: str, port: int = DEFAULT_PORT, timeout: float = 2.0) -
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+def mic_test(device: int | None, seconds: float = 4.0) -> None:
+    """Record from *device* and report the audio level — proves the mic works
+    without involving Whisper or DeskFlow.  Device falls back to saved config."""
+    if device is None:
+        device = load_config().get("device")
+    from audio_capture import AudioCapture
+    print(f"Recording {seconds:.0f}s from {_device_name(device)} — SPEAK NOW…")
+    cap = AudioCapture(device=device)
+    cap.start()
+    time.sleep(seconds)
+    pcm = cap.stop()
+    peak = _pcm_peak(pcm)
+    pct = peak * 100 // 32767
+    bar = "#" * (pct // 2)
+    print(f"\n  peak level: {pct:3d}%  |{bar:<50}|")
+    if pct < 2:
+        print("\n  ✗ SILENT — this mic captured no sound. Likely causes:")
+        print("    • wrong device index (run `devices` and pick the one you speak into)")
+        print("    • mic muted / unplugged / wrong input selected in Windows Sound settings")
+        print("    • another app (e.g. Voicemod) is holding the device")
+        print("  Set the right one with:  python streamdeck_daemon.py setup --device <IDX>")
+    elif pct < 10:
+        print("\n  ⚠ Very quiet — speech may transcribe poorly. Raise the mic gain or move closer.")
+    else:
+        print("\n  ✓ Good signal — this mic is working.")
+
+
 def list_input_devices() -> None:
     """Print all input-capable audio devices with their indices and the default."""
     try:
@@ -503,10 +562,20 @@ def main() -> None:
 
     sub.add_parser("devices", help="List available microphones (input devices) and their indices")
 
+    mt = sub.add_parser("mictest", help="Record a few seconds and show the audio level "
+                                        "(diagnose silent-mic / 'thank you' hallucinations)")
+    mt.add_argument("--device", "-d", type=int, default=None, metavar="INDEX",
+                    help="Device index to test (default: the one saved by setup)")
+    mt.add_argument("--seconds", type=float, default=4.0)
+
     args = p.parse_args()
 
     if args.command == "devices":
         list_input_devices()
+        return
+
+    if args.command == "mictest":
+        mic_test(args.device, seconds=args.seconds)
         return
 
     if args.command == "setup":
