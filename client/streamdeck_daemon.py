@@ -114,11 +114,14 @@ def load_config() -> dict:
         return {}
 
 
-def save_config(updates: dict) -> str:
-    """Merge *updates* (dropping None values) into the config file. Returns path."""
+def save_config(updates: dict, remove: tuple = ()) -> str:
+    """Merge *updates* (dropping None values) into the config file, deleting any
+    keys in *remove*. Returns the config path."""
     path = config_path()
     cfg = load_config()
     cfg.update({k: v for k, v in updates.items() if v is not None})
+    for key in remove:
+        cfg.pop(key, None)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(cfg, fh, indent=2)
@@ -147,6 +150,30 @@ def _pcm_peak(pcm: bytes) -> int:
         a = array.array("h")
         a.frombytes(pcm[: len(pcm) - (len(pcm) % 2)])
         return max((abs(x) for x in a), default=0)
+
+
+def _resolve_input_device(device: int | None, device_name: str = "") -> int | None:
+    """Resolve a mic to a current index.
+
+    Device indices reshuffle when hardware is added/removed or on reboot, so a
+    saved numeric index goes stale.  If *device_name* is given, find the lowest
+    input device whose name contains that substring (case-insensitive) and use
+    its *current* index — stable across reshuffles.  Falls back to the numeric
+    *device* (or system default) if no name match is found.
+    """
+    if device_name:
+        try:
+            import sounddevice as sd
+            needle = device_name.lower()
+            for idx, dev in enumerate(sd.query_devices()):
+                if dev.get("max_input_channels", 0) >= 1 and needle in dev["name"].lower():
+                    return idx
+            log.warning("No input device matching %r — falling back to %s",
+                        device_name,
+                        f"index {device}" if device is not None else "system default")
+        except Exception as exc:
+            log.warning("Device-name lookup failed (%s) — using numeric index", exc)
+    return device
 
 
 def _device_name(device: int | None) -> str:
@@ -219,6 +246,7 @@ class TalkFlowDaemon:
         server_url: str = "",
         groq_key: str = "",
         device: int | None = None,
+        device_name: str = "",
         sync_delay_ms: int = 250,
         restore_delay_ms: int = 700,
         port: int = DEFAULT_PORT,
@@ -242,9 +270,11 @@ class TalkFlowDaemon:
 
         from audio_capture import AudioCapture
         from clipboard_injector import ClipboardInjector
-        self._device = device
-        self._audio = AudioCapture(device=device)
-        log.info("🎙  Mic: %s", _device_name(device))
+        resolved = _resolve_input_device(device, device_name)
+        self._device = resolved
+        self._audio = AudioCapture(device=resolved)
+        log.info("🎙  Mic: %s%s", _device_name(resolved),
+                 f"  (matched name {device_name!r})" if device_name else "")
         self._injector = ClipboardInjector(sync_delay_ms=sync_delay_ms,
                                            restore_delay_ms=restore_delay_ms)
         self._state = IDLE
@@ -457,17 +487,27 @@ def send_command(command: str, port: int = DEFAULT_PORT, timeout: float = 2.0) -
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
-def mic_test(device: int | None, seconds: float = 4.0) -> None:
-    """Record from *device* and report the audio level — proves the mic works
-    without involving Whisper or DeskFlow.  Device falls back to saved config."""
-    if device is None:
-        device = load_config().get("device")
+def mic_test(device: int | None, device_name: str = "", seconds: float = 4.0) -> None:
+    """Record from a mic and report the audio level — proves the mic works
+    without involving Whisper or DeskFlow.  Falls back to saved config; resolves
+    by name when given so it tracks index reshuffles."""
+    cfg = load_config()
+    if device is None and not device_name:
+        device = cfg.get("device")
+        device_name = cfg.get("device_name", "")
+    device = _resolve_input_device(device, device_name)
     from audio_capture import AudioCapture
     print(f"Recording {seconds:.0f}s from {_device_name(device)} — SPEAK NOW…")
     cap = AudioCapture(device=device)
-    cap.start()
-    time.sleep(seconds)
-    pcm = cap.stop()
+    try:
+        cap.start()
+        time.sleep(seconds)
+        pcm = cap.stop()
+    except Exception as exc:
+        print(f"\n  ✗ Could not open this device as a microphone: {exc}")
+        print("    (It may be an output/loopback device. Run `devices` and pick a real mic,")
+        print('     or select by name:  python streamdeck_daemon.py mictest --device-name "MOVO")')
+        return
     peak = _pcm_peak(pcm)
     pct = peak * 100 // 32767
     bar = "#" * (pct // 2)
@@ -507,8 +547,8 @@ def list_input_devices() -> None:
         mark = "  <- default" if idx == default_in else ""
         print(f"  {idx:>3}  {dev['max_input_channels']:>2}  "
               f"{int(dev['default_samplerate']):>6}  {dev['name']}{mark}")
-    print("\nLock in a specific mic once (no reinstall needed), e.g.:")
-    print("  python streamdeck_daemon.py setup --device 5")
+    print("\nLock in a mic by NAME so it survives index reshuffles/reboots:")
+    print('  python streamdeck_daemon.py setup --device-name "MOVO GM-5"')
 
 
 # ---------------------------------------------------------------------------
@@ -526,6 +566,9 @@ def main() -> None:
     d.add_argument("--server", "-s", default=None, metavar="HOST:PORT")
     d.add_argument("--device", "-d", type=int, default=None, metavar="INDEX",
                    help="Input device index (default: system default)")
+    d.add_argument("--device-name", default=None, metavar="SUBSTR",
+                   help="Match the mic by name substring instead of index "
+                        "(survives index reshuffles); overrides --device")
     d.add_argument("--sync-delay", type=int, default=None, metavar="MS",
                    help="Delay before paste so DeskFlow can sync the clipboard")
     d.add_argument("--restore-delay", type=int, default=None, metavar="MS")
@@ -547,6 +590,9 @@ def main() -> None:
     st.add_argument("--groq-key", "-g", metavar="KEY")
     st.add_argument("--server", "-s", metavar="HOST:PORT")
     st.add_argument("--device", "-d", type=int, metavar="INDEX")
+    st.add_argument("--device-name", metavar="SUBSTR",
+                    help='Match the mic by name, e.g. --device-name "MOVO GM-5" '
+                         "(stable across index reshuffles)")
     st.add_argument("--remote-paste", metavar="HOST:PORT")
     st.add_argument("--port", "-p", type=int)
     st.add_argument("--show", action="store_true",
@@ -566,6 +612,8 @@ def main() -> None:
                                         "(diagnose silent-mic / 'thank you' hallucinations)")
     mt.add_argument("--device", "-d", type=int, default=None, metavar="INDEX",
                     help="Device index to test (default: the one saved by setup)")
+    mt.add_argument("--device-name", default=None, metavar="SUBSTR",
+                    help='Match the mic by name, e.g. --device-name "G06"')
     mt.add_argument("--seconds", type=float, default=4.0)
 
     args = p.parse_args()
@@ -575,7 +623,7 @@ def main() -> None:
         return
 
     if args.command == "mictest":
-        mic_test(args.device, seconds=args.seconds)
+        mic_test(args.device, device_name=args.device_name or "", seconds=args.seconds)
         return
 
     if args.command == "setup":
@@ -589,12 +637,16 @@ def main() -> None:
                   if shown else "(empty — run setup to populate)")
             return
         updates = {k: getattr(args, k) for k in
-                   ("backend", "groq_key", "server", "device", "remote_paste", "port")}
+                   ("backend", "groq_key", "server", "device", "device_name",
+                    "remote_paste", "port")}
         if not any(v is not None for v in updates.values()):
             p.error("nothing to save — pass at least one of "
-                    "--groq-key/--device/--remote-paste/--backend/--server/--port "
+                    "--groq-key/--device/--device-name/--remote-paste/--backend/--server/--port "
                     "(or --show to view current config)")
-        path = save_config(updates)
+        # Selecting a mic by name supersedes a stale numeric index — drop the
+        # saved index so the two can't disagree after the indices reshuffle.
+        remove = ("device",) if args.device_name else ()
+        path = save_config(updates, remove=remove)
         print(f"Saved config to {path}")
         print("You can now run the daemon with no flags:  python streamdeck_daemon.py daemon")
         return
@@ -627,6 +679,7 @@ def main() -> None:
         # Groq key precedence: flag → config → GROQ_API_KEY env var.
         groq_key = args.groq_key or cfg.get("groq_key") or DEFAULT_GROQ_KEY
         device = resolve("device", None)
+        device_name = resolve("device_name", "")
         sync_delay = resolve("sync_delay", 250)
         restore_delay = resolve("restore_delay", 700)
         remote_paste = resolve("remote_paste", "")
@@ -640,7 +693,7 @@ def main() -> None:
                     "    python streamdeck_daemon.py setup --groq-key gsk_...")
         daemon = TalkFlowDaemon(
             backend=backend, server_url=server, groq_key=groq_key,
-            device=device, sync_delay_ms=sync_delay,
+            device=device, device_name=device_name, sync_delay_ms=sync_delay,
             restore_delay_ms=restore_delay, port=port,
             remote_paste=remote_paste,
         )
