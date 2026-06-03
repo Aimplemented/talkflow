@@ -78,10 +78,11 @@ class AudioCapture:
     get_buffered_audio() returns a snapshot without stopping.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, device: Optional[int] = None) -> None:
         self._lock = threading.Lock()
         self._buffer = bytearray()
         self._is_recording = False
+        self._device = device      # input device index (None = system default)
 
         # Backend-specific handles (populated during start())
         self._pa_instance = None   # PyAudio instance
@@ -156,7 +157,7 @@ class AudioCapture:
         import pyaudio
         pa = pyaudio.PyAudio()
         self._pa_instance = pa
-        self._pa_stream = pa.open(
+        kwargs = dict(
             format=pyaudio.paInt16,
             channels=CHANNELS,
             rate=SAMPLE_RATE,
@@ -164,6 +165,9 @@ class AudioCapture:
             frames_per_buffer=CHUNK_FRAMES,
             stream_callback=self._pyaudio_callback,
         )
+        if self._device is not None:
+            kwargs["input_device_index"] = self._device
+        self._pa_stream = pa.open(**kwargs)
         self._pa_stream.start_stream()
 
     def _stop_pyaudio(self) -> None:
@@ -198,13 +202,16 @@ class AudioCapture:
     def _start_sounddevice(self) -> None:
         import sounddevice as sd
         import numpy as np
-        self._sd_stream = sd.InputStream(
+        kwargs = dict(
             samplerate=SAMPLE_RATE,
             channels=CHANNELS,
             dtype="int16",
             blocksize=CHUNK_FRAMES,
             callback=self._sounddevice_callback,
         )
+        if self._device is not None:
+            kwargs["device"] = self._device
+        self._sd_stream = sd.InputStream(**kwargs)
         self._sd_stream.start()
 
     def _stop_sounddevice(self) -> None:

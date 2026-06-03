@@ -176,6 +176,12 @@ DEFAULT_CONFIG = {
     "paste_sync_delay_ms": 250,      # wait for DeskFlow to sync clipboard before paste
     "paste_restore_delay_ms": 700,   # wait after paste before restoring old clipboard
 
+    # Remote agents (DeskFlow host mode). When DeskFlow hands the keyboard to
+    # another screen, the hotkey arrives there — so a TalkFlow Agent on that
+    # screen asks this PC to record. Enable hosting to serve those agents.
+    "host_enabled": False,
+    "host_port": 9877,
+
     # Microphone settings
     "mic_device": None,
     "mic_device_name": "System Default",
@@ -1144,6 +1150,30 @@ class TalkFlowGUI:
             font=("Segoe UI", 8), foreground="gray", wraplength=460,
             justify="left").pack(fill="x", pady=(6, 0))
 
+        # Remote agents (host mode)
+        ttk.Separator(delivery_frame, orient="horizontal").pack(fill="x", pady=8)
+
+        host_row = ttk.Frame(delivery_frame)
+        host_row.pack(fill="x")
+        self.host_enabled_var = tk.BooleanVar(value=self.config.get("host_enabled", False))
+        ttk.Checkbutton(
+            host_row, text="Host remote agents (for other DeskFlow screens)",
+            variable=self.host_enabled_var,
+            command=self._on_host_change).pack(side="left")
+        ttk.Label(host_row, text="Port:").pack(side="left", padx=(10, 2))
+        self.host_port_var = tk.StringVar(value=str(self.config.get("host_port", 9877)))
+        ttk.Entry(host_row, textvariable=self.host_port_var, width=7).pack(side="left")
+
+        ttk.Label(
+            delivery_frame,
+            text="When DeskFlow gives another screen the keyboard, your hotkey "
+                 "lands there, not here. Run talkflow_agent.py on that screen "
+                 "(Ubuntu/Mac); it catches the hotkey, asks this PC to record, and "
+                 "types the result locally. Enable hosting so this PC answers those "
+                 "agents.",
+            font=("Segoe UI", 8), foreground="gray", wraplength=460,
+            justify="left").pack(fill="x", pady=(6, 0))
+
         # === Preferences ===
         pref_frame = ttk.LabelFrame(body, text="  Preferences  ", padding=10)
         pref_frame.pack(fill="x", padx=15, pady=5)
@@ -1226,8 +1256,9 @@ class TalkFlowGUI:
         self.dash_backend = _row(1, "Backend")
         self.dash_delivery = _row(2, "Delivery")
         self.dash_hotkey = _row(3, "Hotkey")
-        self.dash_health = _row(4, "Server health")
-        self.dash_last = _row(5, "Last delivery")
+        self.dash_host = _row(4, "Remote host")
+        self.dash_health = _row(5, "Server health")
+        self.dash_last = _row(6, "Last delivery")
 
         # Manual server health check
         btns = ttk.Frame(cards)
@@ -1344,6 +1375,77 @@ class TalkFlowGUI:
         self._log(f"Delivery mode: {mode}")
         self._refresh_dashboard()
 
+    def _on_host_change(self):
+        """Handle the host-mode checkbox - auto-save (takes effect on next Start)."""
+        self.config["host_enabled"] = self.host_enabled_var.get()
+        try:
+            self.config["host_port"] = int(self.host_port_var.get())
+        except ValueError:
+            self.config["host_port"] = 9877
+            self.host_port_var.set("9877")
+        save_config(self.config)
+        state = "on" if self.config["host_enabled"] else "off"
+        self._log(f"Remote-agent hosting {state} (applies when you Start)")
+        self._refresh_dashboard()
+
+    # ------------------------------------------------------------------
+    # Remote-agent host (runs a network server in a background thread)
+    # ------------------------------------------------------------------
+    def _start_host(self):
+        import asyncio
+        from network_server import TalkFlowHost, make_transcriber
+
+        port = int(self.config.get("host_port", 9877))
+        transcriber = make_transcriber(self.config)
+        mic = self.config.get("mic_device")
+        self._host = TalkFlowHost(transcriber, port=port, mic_device=mic,
+                                  on_event=self._host_event)
+
+        def _run():
+            loop = asyncio.new_event_loop()
+            self._host_loop = loop
+            asyncio.set_event_loop(loop)
+            try:
+                loop.run_until_complete(self._host.start())
+            except Exception as e:
+                self.root.after(0, lambda: self._log(f"Host error: {e}"))
+            finally:
+                loop.close()
+
+        threading.Thread(target=_run, daemon=True).start()
+        self._log(f"Hosting remote agents on port {port}")
+
+    def _stop_host(self):
+        import asyncio
+        host = getattr(self, "_host", None)
+        loop = getattr(self, "_host_loop", None)
+        if host and loop:
+            try:
+                asyncio.run_coroutine_threadsafe(host.stop(), loop)
+            except Exception as e:
+                self._log(f"Host stop error: {e}")
+        self._host = None
+        self._host_loop = None
+
+    def _host_event(self, kind: str, message: str = ""):
+        """Called from the host thread — marshal onto the Tk thread."""
+        labels = {
+            "listening": "Host listening",
+            "agent_connected": "Agent connected",
+            "agent_disconnected": "Agent disconnected",
+            "recording": "Remote: recording…",
+            "transcribing": "Remote: transcribing…",
+            "ready": "Remote ✓",
+            "error": "Host error",
+        }
+        label = labels.get(kind, kind)
+        line = f"{label}: {message}" if message else label
+        self.root.after(0, lambda: self._log(line))
+        if kind in ("agent_connected", "agent_disconnected", "listening"):
+            self.root.after(0, self._refresh_dashboard)
+        if kind == "ready" and message:
+            self.root.after(0, lambda: self._mark_delivery("remote agent", message, True))
+
     # ------------------------------------------------------------------
     # Dashboard
     # ------------------------------------------------------------------
@@ -1369,6 +1471,21 @@ class TalkFlowGUI:
             self.dash_delivery.config(text="Local — type at cursor", foreground="black")
 
         self.dash_hotkey.config(text=self.config.get("hotkey", "f9"))
+
+        # Remote-agent host status
+        host = getattr(self, "_host", None)
+        if self.config.get("host_enabled"):
+            port = self.config.get("host_port", 9877)
+            n = len(host.clients) if host else 0
+            if host and running:
+                self.dash_host.config(
+                    text=f"Listening on :{port} — {n} agent(s) connected",
+                    foreground="#0d9488")
+            else:
+                self.dash_host.config(text=f"Enabled (:{port}) — starts with service",
+                                      foreground="gray")
+        else:
+            self.dash_host.config(text="Off", foreground="gray")
 
     def _dashboard_health_check(self):
         """Run a server health check and show the result on the dashboard."""
@@ -1583,6 +1700,11 @@ class TalkFlowGUI:
         self.config["mic_device"] = self._get_device_index()
         self.config["mic_device_name"] = self.mic_var.get()
         self.config["delivery_mode"] = self.delivery_mode_var.get()
+        self.config["host_enabled"] = self.host_enabled_var.get()
+        try:
+            self.config["host_port"] = int(self.host_port_var.get())
+        except ValueError:
+            self.config["host_port"] = 9877
         save_config(self.config)
         self._refresh_dashboard()
         self._log("Settings saved ✓")
@@ -1633,6 +1755,10 @@ class TalkFlowGUI:
             if self.config.get("delivery_mode") == "deskflow_paste":
                 self._log("DeskFlow mode: transcripts paste to the active screen")
 
+            # Start the remote-agent host if enabled
+            if self.config.get("host_enabled"):
+                self._start_host()
+
             self.server_entry.config(state="disabled")
             self.mic_combo.config(state="disabled")
             self.hotkey_entry.config(state="disabled")
@@ -1653,6 +1779,9 @@ class TalkFlowGUI:
                 self._audio.stop()
         except:
             pass
+
+        # Stop the remote-agent host if it was running
+        self._stop_host()
 
         self.is_running = False
         self._is_recording = False

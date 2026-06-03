@@ -341,13 +341,61 @@ The desktop GUI has a **Dashboard** tab showing live status: service
 running/stopped, active backend, delivery mode, hotkey, a manual server-health
 check, and a feed of recent transcripts with their delivery result.
 
-### Network fallback (advanced)
+### Dictating onto another screen — the TalkFlow Agent (recommended)
 
-For screens where DeskFlow forwarding misbehaves, `client/network_server.py` and
-`client/network_client.py` provide an optional WebSocket path: the server
-broadcasts transcribed text and a small client on each machine injects it
-locally. This is independent of DeskFlow but requires running a TalkFlow client
-on each target. The clipboard/DeskFlow path above is the recommended default.
+There's a catch with the clipboard‑paste approach: **when DeskFlow gives another
+screen the keyboard, it forwards your hotkey to that screen and swallows it on
+the primary.** So a hotkey held while you're on a remote screen never reaches
+the PC — nothing records. (If you only ever dictate while the cursor is on the
+primary, clipboard‑paste mode is fine; for true "speak while on the other
+screen" dictation you need the Agent.)
+
+The Agent model catches the hotkey **on the screen that currently has the
+keyboard**, then asks the PC (which has the mic) to record:
+
+```
+  Agent (Ubuntu / Mac)              Host (PC — has the mic + Whisper/Groq)
+  --------------------              --------------------------------------
+  hold F9      ── start ──▶          record the PC microphone
+  release F9   ── stop  ──▶          stop, transcribe
+               ◀── text ──           return the transcript
+  type it here (local inject)
+```
+
+**On the PC (host):** in the GUI's **Delivery** section, tick **"Host remote
+agents"** and Start — or run it headless:
+
+```bash
+cd client
+python talkflow_host.py            # reads config.json for backend/key/mic; listens on :9877
+```
+
+Make sure your firewall allows inbound TCP on the host port (9877). Note the
+PC's IP (LAN or Tailscale).
+
+**On each remote screen (Ubuntu "AI5090", Mac Mini):** install the small client
+and run the agent, pointing it at the PC:
+
+```bash
+# one-time: Python deps + (Linux) a typing tool
+pip install websockets pynput
+sudo apt install xdotool          # Linux/X11 only; macOS needs no extra tool
+
+cd client
+python talkflow_agent.py --host <PC_IP>:9877 --hotkey f9
+```
+
+Now, while controlling that screen, hold F9, speak, release — the text is typed
+into the focused app **on that screen**. Because each agent injects locally,
+there's no Ctrl‑vs‑Cmd problem and no clipboard juggling.
+
+Notes:
+- Use a LAN IP if the machines share a network, or a **Tailscale** IP to dictate
+  across networks.
+- On Linux the agent's global hotkey works best under **X11**; Wayland restricts
+  global key capture.
+- Only the agent that started a recording receives its transcript, so multiple
+  screens never type over each other.
 
 ---
 
