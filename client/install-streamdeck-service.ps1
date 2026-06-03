@@ -24,6 +24,12 @@
     Local control port the daemon listens on (default 9878). Match your Stream
     Deck trigger if you change it.
 
+.PARAMETER RemotePaste
+    HOST:PORT of a paste_helper.py running on the active remote screen (the
+    AI5090). When set, transcripts are typed directly on that machine instead of
+    relying on DeskFlow clipboard/keystroke forwarding (falls back to local
+    clipboard paste if unreachable). Port defaults to 9879.
+
 .PARAMETER Uninstall
     Remove the scheduled task.
 
@@ -42,6 +48,7 @@ param(
     [string]$Server = "",
     [int]$Port = 9878,
     [int]$Device = -1,
+    [string]$RemotePaste = "",
     [switch]$Uninstall
 )
 
@@ -114,6 +121,7 @@ $argList = @(
 )
 if ($Backend -eq "server") { $argList += @("--server", $Server) }
 if ($Device -ge 0)         { $argList += @("--device", "$Device") }
+if ($RemotePaste)          { $argList += @("--remote-paste", $RemotePaste) }
 # Pass the key directly: Task Scheduler does not reliably inherit a freshly-set
 # user environment variable, so relying on GROQ_API_KEY alone can 401.
 if ($Backend -eq "groq" -and $EffectiveKey) { $argList += @("--groq-key", $EffectiveKey) }

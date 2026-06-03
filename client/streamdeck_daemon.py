@@ -70,6 +70,7 @@ log = logging.getLogger("talkflow.streamdeck")
 MIN_AUDIO_BYTES = 3200
 WS_CHUNK_SIZE = 64 * 1024
 TRANSCRIBE_TIMEOUT = 30.0
+REMOTE_PASTE_TIMEOUT = 5.0
 DEFAULT_PORT = 9878
 DEFAULT_GROQ_KEY = os.getenv("GROQ_API_KEY", "")
 
@@ -77,6 +78,30 @@ DEFAULT_GROQ_KEY = os.getenv("GROQ_API_KEY", "")
 IDLE = "idle"
 RECORDING = "recording"
 PROCESSING = "processing"
+
+
+def _send_remote_paste(host: str, port: int, text: str,
+                       timeout: float = REMOTE_PASTE_TIMEOUT) -> bool:
+    """Ship *text* to a paste_helper on the remote screen (the AI5090).
+
+    Opens a connection, writes the UTF-8 text, half-closes the write side so
+    the helper reads to EOF, then waits for an "ok" reply.  The timeout means a
+    dead/unreachable helper can never wedge the daemon's processing thread.
+    Returns True only if the helper acknowledged with "ok".
+    """
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            sock.sendall(text.encode("utf-8"))
+            sock.shutdown(socket.SHUT_WR)
+            reply = sock.recv(256).decode("utf-8", "replace").strip()
+        if reply == "ok":
+            return True
+        log.warning("Remote paste helper replied: %s", reply or "<empty>")
+        return False
+    except Exception as exc:
+        log.warning("Remote paste to %s:%d failed: %s", host, port, exc)
+        return False
 
 
 def _beep(kind: str) -> None:
@@ -118,11 +143,23 @@ class TalkFlowDaemon:
         sync_delay_ms: int = 250,
         restore_delay_ms: int = 700,
         port: int = DEFAULT_PORT,
+        remote_paste: str = "",
     ) -> None:
         self._backend = backend
         self._server_url = server_url
         self._groq_key = groq_key
         self._port = port
+
+        # Optional remote paste target: "HOST:PORT" of a paste_helper running on
+        # the active remote screen (the AI5090).  When set, transcripts are typed
+        # locally on that machine — bypassing DeskFlow's clipboard/keystroke
+        # forwarding — with a fallback to the local clipboard-paste path.
+        self._remote_host = ""
+        self._remote_port = 0
+        if remote_paste:
+            host, _, port_str = remote_paste.partition(":")
+            self._remote_host = host.strip()
+            self._remote_port = int(port_str) if port_str.strip() else 9879
 
         from audio_capture import AudioCapture
         from clipboard_injector import ClipboardInjector
@@ -211,11 +248,26 @@ class TalkFlowDaemon:
             self._last_text = (self._last_text + " " + cleaned).strip()[-900:]
             self._last_text_time = time.time()
 
-            if not self._injector.deliver(cleaned + " "):
-                log.warning("Delivery (clipboard paste) failed")
+            if not self._deliver(cleaned + " "):
+                log.warning("Delivery failed")
         finally:
             with self._lock:
                 self._state = IDLE
+
+    def _deliver(self, text: str) -> bool:
+        """Deliver *text* to the active screen.
+
+        If a remote paste helper is configured, type it directly on that machine
+        (reliable across DeskFlow).  Fall back to the local clipboard-paste path
+        if the helper is unreachable so delivery still works on the PC screen.
+        """
+        if self._remote_host:
+            if _send_remote_paste(self._remote_host, self._remote_port, text):
+                log.info("→  delivered to remote helper %s:%d",
+                         self._remote_host, self._remote_port)
+                return True
+            log.info("Remote helper unreachable — falling back to local clipboard paste")
+        return self._injector.deliver(text)
 
     def _transcribe_groq(self, audio_bytes: bytes, initial_prompt: str = "") -> dict:
         from groq_transcribe import transcribe_audio
@@ -267,6 +319,11 @@ class TalkFlowDaemon:
         print(f"\n{'='*60}")
         print(f"  TalkFlow — Stream Deck daemon ready")
         print(f"  Backend : {'Groq Cloud' if self._backend == 'groq' else self._server_url}")
+        if self._remote_host:
+            print(f"  Deliver : remote helper {self._remote_host}:{self._remote_port} "
+                  f"(fallback: local clipboard paste)")
+        else:
+            print(f"  Deliver : local clipboard paste (DeskFlow forwarding)")
         print(f"  Control : 127.0.0.1:{self._port}")
         print(f"  Trigger : python streamdeck_daemon.py toggle")
         print(f"  Ctrl+C to quit.")
@@ -356,6 +413,11 @@ def main() -> None:
     d.add_argument("--sync-delay", type=int, default=250, metavar="MS",
                    help="Delay before paste so DeskFlow can sync the clipboard")
     d.add_argument("--restore-delay", type=int, default=700, metavar="MS")
+    d.add_argument("--remote-paste", default="", metavar="HOST:PORT",
+                   help="Send transcripts to a paste_helper on the active remote "
+                        "screen (the AI5090) instead of relying on DeskFlow's "
+                        "clipboard/keystroke forwarding. Falls back to local "
+                        "clipboard paste if unreachable. Port defaults to 9879.")
     d.add_argument("--port", "-p", type=int, default=DEFAULT_PORT)
     d.add_argument("--log-file", default="", metavar="PATH",
                    help="Append logs to this file (useful when run hidden as a service)")
@@ -396,6 +458,7 @@ def main() -> None:
             backend=args.backend, server_url=args.server, groq_key=args.groq_key,
             device=args.device, sync_delay_ms=args.sync_delay,
             restore_delay_ms=args.restore_delay, port=args.port,
+            remote_paste=args.remote_paste,
         )
         daemon.serve()
     else:
