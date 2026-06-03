@@ -102,6 +102,9 @@ if ($GroqKey) {
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 
 # ---- Build the task action ------------------------------------------------
+# Resolve the key we'll actually use (param wins, else existing env var).
+$EffectiveKey = if ($GroqKey) { $GroqKey } else { $env:GROQ_API_KEY }
+
 $argList = @(
     "`"$DaemonPath`"", "daemon",
     "--backend", $Backend,
@@ -109,6 +112,9 @@ $argList = @(
     "--log-file", "`"$LogFile`""
 )
 if ($Backend -eq "server") { $argList += @("--server", $Server) }
+# Pass the key directly: Task Scheduler does not reliably inherit a freshly-set
+# user environment variable, so relying on GROQ_API_KEY alone can 401.
+if ($Backend -eq "groq" -and $EffectiveKey) { $argList += @("--groq-key", $EffectiveKey) }
 $Arguments = $argList -join " "
 
 $action  = New-ScheduledTaskAction -Execute $PythonW -Argument $Arguments -WorkingDirectory $ScriptDir
