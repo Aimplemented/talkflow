@@ -397,6 +397,60 @@ Notes:
 - Only the agent that started a recording receives its transcript, so multiple
   screens never type over each other.
 
+### Dictating onto a Wayland screen — the Stream Deck command trigger
+
+On modern Wayland desktops (GNOME 46+, e.g. Ubuntu 25.10) DeskFlow injects
+forwarded input through **libei / the RemoteDesktop portal**. By design those
+events are delivered straight to the focused app and are **invisible to evdev,
+pynput, and global shortcuts** — so the Agent above can't catch a hotkey on a
+Wayland client, and neither can anything else. There is no DeskFlow setting to
+change this; libei is the only Wayland injection path it has.
+
+The fix is to trigger recording with something that is **not a keystroke at
+all**. A **Stream Deck** (or any programmable macropad) fires a *command* over
+USB‑HID through its own software, so it never enters the keyboard event stream
+DeskFlow hooks — it works no matter which screen the cursor is on. Everything
+runs on the PC; the transcript is delivered with the same clipboard‑paste path,
+landing wherever your cursor is.
+
+Because a Stream Deck button runs a command that returns immediately (it can't
+*hold* a recording open across two presses), TalkFlow splits into a small
+**daemon** that owns the recording state and a **trigger** the button fires.
+
+**On the PC (with the mic), run the daemon once** (e.g. at login):
+
+```bash
+cd client
+python streamdeck_daemon.py daemon --backend groq --groq-key gsk_xxx
+# or self-hosted:  python streamdeck_daemon.py daemon --backend server --server <PC_IP>:9876
+```
+
+**Point a Stream Deck button** (System → Open, or a "Run command" plugin) at one
+of these. A single toggle button is the simplest:
+
+```bash
+python streamdeck_daemon.py toggle      # press = start, press again = stop + transcribe
+```
+
+Prefer push‑to‑talk? Use a button's separate key‑down / key‑up actions:
+
+```bash
+python streamdeck_daemon.py start        # on key-down
+python streamdeck_daemon.py stop         # on key-up
+```
+
+On Windows, use `pythonw.exe` for the trigger to avoid a console window flash.
+The trigger needs only the Python standard library, so it works even on a
+machine without the audio packages installed.
+
+Notes:
+- The daemon listens on `127.0.0.1:9878` (override with `--port`); the trigger
+  connects there and exits in milliseconds.
+- `python streamdeck_daemon.py status` / `ping` report daemon state — handy for a
+  Stream Deck button that shows whether it's recording.
+- Same clipboard‑paste delivery as DeskFlow mode, so the cross‑OS Cmd↔Ctrl
+  mapping and `--sync-delay` / `--restore-delay` tuning notes above still apply.
+
 ---
 
 ## Building from Source
