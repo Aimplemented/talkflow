@@ -117,10 +117,11 @@ $lines = @(
 )
 [System.IO.File]::WriteAllLines("$TF_DIR\TalkFlow.bat", $lines)
 
-# Desktop shortcut
+# Desktop shortcut (use the real Desktop folder, which may be redirected to OneDrive)
 try {
     $WshShell = New-Object -ComObject WScript.Shell
-    $Shortcut = $WshShell.CreateShortcut("$env:USERPROFILE\Desktop\TalkFlow.lnk")
+    $desktop = [Environment]::GetFolderPath("Desktop")
+    $Shortcut = $WshShell.CreateShortcut("$desktop\TalkFlow.lnk")
     $Shortcut.TargetPath = "$TF_DIR\TalkFlow.bat"
     $Shortcut.WorkingDirectory = "$TF_DIR"
     $Shortcut.Description = "TalkFlow - Push-to-Talk Voice Dictation"
