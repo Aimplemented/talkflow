@@ -466,10 +466,12 @@ This stores your key as a per‑user `GROQ_API_KEY`, creates a Scheduled Task
 ("TalkFlow Stream Deck Daemon") that starts at logon and restarts on failure,
 launches it immediately, and logs to `%LOCALAPPDATA%\TalkFlow\daemon.log`.
 
-Then set your **Stream Deck** button (System → Open) to:
+Then set your **Stream Deck** button (System → Open) — point App/File at the
+silent launcher (the Open action can't pass arguments, so use the `.vbs`, not
+`streamdeck_daemon.py`):
 
 ```
-pythonw "<path>\client\streamdeck_daemon.py" toggle
+<path>\client\toggle.vbs
 ```
 
 To remove it:

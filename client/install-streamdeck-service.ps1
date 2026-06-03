@@ -161,8 +161,11 @@ if ((Test-NetConnection -ComputerName 127.0.0.1 -Port $Port -InformationLevel Qu
     Write-Host "  $LogFile"
 }
 
+$VbsPath = Join-Path $ScriptDir "toggle.vbs"
 Write-Host ""
-Write-Host "Stream Deck button -> System: Open ->" -ForegroundColor Cyan
-Write-Host "  pythonw `"$DaemonPath`" toggle --port $Port"
+Write-Host "Stream Deck button: add a 'System > Open' action and set App/File to:" -ForegroundColor Cyan
+Write-Host "  $VbsPath"
+Write-Host "(This runs the toggle silently via pythonw. The Open action cannot take"
+Write-Host " arguments, so point it at the .vbs - not at streamdeck_daemon.py.)"
 Write-Host ""
 Write-Host "To remove: powershell -ExecutionPolicy Bypass -File install-streamdeck-service.ps1 -Uninstall"
