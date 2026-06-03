@@ -451,6 +451,33 @@ Notes:
 - Same clipboard‑paste delivery as DeskFlow mode, so the cross‑OS Cmd↔Ctrl
   mapping and `--sync-delay` / `--restore-delay` tuning notes above still apply.
 
+#### Auto‑start the daemon on Windows
+
+So the daemon is always running when you sit down, register it as a hidden
+logon task (runs via `pythonw.exe`, no console window):
+
+```powershell
+cd client
+powershell -ExecutionPolicy Bypass -File install-streamdeck-service.ps1 -GroqKey gsk_xxx
+# self-hosted instead:  -Backend server -Server <PC_IP>:9876
+```
+
+This stores your key as a per‑user `GROQ_API_KEY`, creates a Scheduled Task
+("TalkFlow Stream Deck Daemon") that starts at logon and restarts on failure,
+launches it immediately, and logs to `%LOCALAPPDATA%\TalkFlow\daemon.log`.
+
+Then set your **Stream Deck** button (System → Open) to:
+
+```
+pythonw "<path>\client\streamdeck_daemon.py" toggle
+```
+
+To remove it:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install-streamdeck-service.ps1 -Uninstall
+```
+
 ---
 
 ## Building from Source

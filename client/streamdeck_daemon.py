@@ -329,6 +329,8 @@ def main() -> None:
                    help="Delay before paste so DeskFlow can sync the clipboard")
     d.add_argument("--restore-delay", type=int, default=700, metavar="MS")
     d.add_argument("--port", "-p", type=int, default=DEFAULT_PORT)
+    d.add_argument("--log-file", default="", metavar="PATH",
+                   help="Append logs to this file (useful when run hidden as a service)")
     d.add_argument("--verbose", "-v", action="store_true")
 
     for name, help_text in (("toggle", "Start if idle, stop+transcribe if recording"),
@@ -344,6 +346,14 @@ def main() -> None:
     if args.command == "daemon":
         if args.verbose:
             logging.getLogger().setLevel(logging.DEBUG)
+        if args.log_file:
+            from logging.handlers import RotatingFileHandler
+            os.makedirs(os.path.dirname(os.path.abspath(args.log_file)), exist_ok=True)
+            fh = RotatingFileHandler(args.log_file, maxBytes=1_000_000, backupCount=3,
+                                     encoding="utf-8")
+            fh.setFormatter(logging.Formatter(
+                "%(asctime)s  %(levelname)-8s  %(message)s", datefmt="%Y-%m-%d %H:%M:%S"))
+            logging.getLogger().addHandler(fh)
         if args.backend == "server" and not args.server:
             p.error("--server is required when using --backend server")
         if args.backend == "groq" and not args.groq_key:
