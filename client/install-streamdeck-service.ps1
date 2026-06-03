@@ -41,6 +41,7 @@ param(
     [string]$Backend = "groq",
     [string]$Server = "",
     [int]$Port = 9878,
+    [int]$Device = -1,
     [switch]$Uninstall
 )
 
@@ -112,6 +113,7 @@ $argList = @(
     "--log-file", "`"$LogFile`""
 )
 if ($Backend -eq "server") { $argList += @("--server", $Server) }
+if ($Device -ge 0)         { $argList += @("--device", "$Device") }
 # Pass the key directly: Task Scheduler does not reliably inherit a freshly-set
 # user environment variable, so relying on GROQ_API_KEY alone can 401.
 if ($Backend -eq "groq" -and $EffectiveKey) { $argList += @("--groq-key", $EffectiveKey) }

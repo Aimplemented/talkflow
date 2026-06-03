@@ -313,6 +313,34 @@ def send_command(command: str, port: int = DEFAULT_PORT, timeout: float = 2.0) -
 # ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+def list_input_devices() -> None:
+    """Print all input-capable audio devices with their indices and the default."""
+    try:
+        import sounddevice as sd
+    except Exception:
+        print("sounddevice is not installed; cannot list devices.\n"
+              "  pip install sounddevice", file=sys.stderr)
+        return
+
+    try:
+        default_in = sd.default.device[0]
+    except Exception:
+        default_in = None
+
+    print("Input devices (microphones):\n")
+    print(f"  {'IDX':>3}  {'CH':>2}  {'RATE':>6}  NAME")
+    print(f"  {'-'*3}  {'-'*2}  {'-'*6}  {'-'*30}")
+    for idx, dev in enumerate(sd.query_devices()):
+        if dev.get("max_input_channels", 0) < 1:
+            continue
+        mark = "  <- default" if idx == default_in else ""
+        print(f"  {idx:>3}  {dev['max_input_channels']:>2}  "
+              f"{int(dev['default_samplerate']):>6}  {dev['name']}{mark}")
+    print("\nUse a specific mic by reinstalling the service with -Device <IDX>, e.g.:")
+    print("  install-streamdeck-service.ps1 -GroqKey gsk_... -Device 2")
+
+
+# ---------------------------------------------------------------------------
 def main() -> None:
     p = argparse.ArgumentParser(
         description="TalkFlow Stream Deck command trigger (DeskFlow/Wayland safe)")
@@ -341,7 +369,13 @@ def main() -> None:
         t = sub.add_parser(name, help=help_text)
         t.add_argument("--port", "-p", type=int, default=DEFAULT_PORT)
 
+    sub.add_parser("devices", help="List available microphones (input devices) and their indices")
+
     args = p.parse_args()
+
+    if args.command == "devices":
+        list_input_devices()
+        return
 
     if args.command == "daemon":
         if args.verbose:
