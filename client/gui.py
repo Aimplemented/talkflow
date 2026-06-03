@@ -912,8 +912,9 @@ class TalkFlowGUI:
 
         self.root = tk.Tk()
         self.root.title("TalkFlow")
-        self.root.geometry("520x700")
-        self.root.resizable(False, False)
+        self.root.geometry("540x780")
+        self.root.minsize(520, 560)
+        self.root.resizable(True, True)
 
         # Set window icon (taskbar and title bar)
         self._set_window_icon()
@@ -987,9 +988,9 @@ class TalkFlowGUI:
 
         ttk.Separator(root, orient="horizontal").pack(fill="x", padx=15, pady=5)
 
-        # Notebook: Settings + Dashboard tabs
+        # Notebook: Settings + Dashboard tabs (packed last, after the controls,
+        # so the Start/Save buttons are always reserved at the bottom).
         self.notebook = ttk.Notebook(root)
-        self.notebook.pack(fill="both", expand=True, padx=10, pady=(0, 0))
         settings_tab = ttk.Frame(self.notebook)
         self.dashboard_tab = ttk.Frame(self.notebook)
         self.notebook.add(settings_tab, text="  Settings  ")
@@ -1182,11 +1183,13 @@ class TalkFlowGUI:
             variable=self.auto_start_var,
             command=self._on_pref_change).pack(side="left")
 
-        # === Controls (always visible, below the tabs) ===
-        ttk.Separator(root, orient="horizontal").pack(fill="x", padx=15, pady=8)
-
+        # === Controls (pinned to the bottom, always visible) ===
+        # Packed with side="bottom" BEFORE the notebook so their space is
+        # reserved even if the tab content is taller than the window.
         ctrl_frame = ttk.Frame(root)
-        ctrl_frame.pack(fill="x", padx=15, pady=(0, 12))
+        ctrl_frame.pack(side="bottom", fill="x", padx=15, pady=(0, 12))
+        ttk.Separator(root, orient="horizontal").pack(side="bottom", fill="x",
+                                                       padx=15, pady=8)
 
         self.start_btn = ttk.Button(ctrl_frame, text="▶  Start TalkFlow",
                                      command=self._toggle_service)
@@ -1195,6 +1198,9 @@ class TalkFlowGUI:
         self.save_btn = ttk.Button(ctrl_frame, text="💾 Save Settings",
                                     command=self._save_settings)
         self.save_btn.pack(side="right")
+
+        # Now pack the notebook to fill the remaining space above the controls.
+        self.notebook.pack(fill="both", expand=True, padx=10, pady=(0, 0))
 
         # === Dashboard tab ===
         self._build_dashboard_tab(self.dashboard_tab)
