@@ -99,8 +99,15 @@ if (-not (Test-Path $DaemonPath)) {
 }
 
 # ---- Validate backend args ------------------------------------------------
-if ($Backend -eq "groq" -and -not $GroqKey -and -not $env:GROQ_API_KEY) {
-    throw "-GroqKey is required for -Backend groq (or set GROQ_API_KEY beforehand)."
+# A key already saved in config.json counts — so a reinstall never forces you
+# to find and re-paste the key.
+$ConfigFile = Join-Path $LogDir "config.json"
+$HasConfigKey = $false
+if (Test-Path $ConfigFile) {
+    try { $HasConfigKey = [bool]((Get-Content $ConfigFile -Raw | ConvertFrom-Json).groq_key) } catch {}
+}
+if ($Backend -eq "groq" -and -not $GroqKey -and -not $env:GROQ_API_KEY -and -not $HasConfigKey) {
+    throw "-GroqKey is required for -Backend groq (or set GROQ_API_KEY, or save it once with: python streamdeck_daemon.py setup --groq-key gsk_...)."
 }
 if ($Backend -eq "server" -and -not $Server) {
     throw "-Server HOST:PORT is required for -Backend server."
