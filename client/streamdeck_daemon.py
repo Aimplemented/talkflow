@@ -633,6 +633,13 @@ def main() -> None:
                     help='Match the mic by name, e.g. --device-name "G06"')
     mt.add_argument("--seconds", type=float, default=4.0)
 
+    dr = sub.add_parser("doctor", help="Run environment self-checks (mic, key, "
+                                       "injection tool, network) with fixes")
+    dr.add_argument("--role", choices=["pc", "remote", "server", "auto"], default="auto")
+    dr.add_argument("--mic-level", action="store_true", help="Also meter the mic")
+    dr.add_argument("--ping-key", action="store_true", help="Validate the Groq key")
+    dr.add_argument("--json", action="store_true", help="Machine-readable output")
+
     args = p.parse_args()
 
     if args.command == "devices":
@@ -642,6 +649,17 @@ def main() -> None:
     if args.command == "mictest":
         mic_test(args.device, device_name=args.device_name or "", seconds=args.seconds)
         return
+
+    if args.command == "doctor":
+        import doctor
+        argv = ["--role", args.role]
+        if args.mic_level:
+            argv.append("--mic-level")
+        if args.ping_key:
+            argv.append("--ping-key")
+        if args.json:
+            argv.append("--json")
+        sys.exit(doctor.main(argv))
 
     if args.command == "setup":
         if args.show:
