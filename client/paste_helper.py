@@ -55,22 +55,28 @@ DEFAULT_PORT = 9879
 MAX_BYTES = 1_000_000  # guard against a runaway sender
 
 
-def _injection_tool() -> str | None:
+def _injection_tool(force: str = "") -> str | None:
     """Return the name of an available text-injection tool, or None.
 
     KeystrokeInjector logs but does not raise when no tool is present, so we
     probe up front: a misconfigured remote box should fail loudly at startup
     rather than silently swallow every transcript.
+
+    ydotool is preferred when available: it injects at the kernel (uinput) level,
+    so it works on BOTH X11 and Wayland AND from a display-less shell (the helper
+    is usually launched over SSH / from a tty, where DISPLAY is unset and xdotool
+    cannot connect). wtype only suits wlroots compositors (not GNOME/KDE).
     """
+    if force:
+        return force if (force == "native" or shutil.which(force)) else None
     if platform.system() != "Linux":
         return "native"  # macOS/Windows backends don't need an external tool
+    if shutil.which("ydotool"):
+        return "ydotool"
     session = os.environ.get("XDG_SESSION_TYPE", "").lower()
-    candidates = ("ydotool", "wtype") if session == "wayland" else ("xdotool",)
-    for tool in candidates:
-        if shutil.which(tool):
-            return tool
-    # On X11, ydotool also works; check it as a last resort either way.
-    return "ydotool" if shutil.which("ydotool") else None
+    if session == "wayland" and shutil.which("wtype"):
+        return "wtype"
+    return "xdotool" if shutil.which("xdotool") else None
 
 
 def _recv_all(conn: socket.socket) -> bytes:
@@ -92,22 +98,37 @@ def _recv_all(conn: socket.socket) -> bytes:
 class PasteHelper:
     """Receives transcript text over TCP and types it into the focused window."""
 
-    def __init__(self, bind: str = "0.0.0.0", port: int = DEFAULT_PORT) -> None:
+    def __init__(self, bind: str = "0.0.0.0", port: int = DEFAULT_PORT,
+                 tool: str = "auto", ydotool_socket: str = "") -> None:
         self._bind = bind
         self._port = port
 
-        tool = _injection_tool()
-        if tool is None:
+        chosen = _injection_tool("" if tool == "auto" else tool)
+        if chosen is None:
             session = os.environ.get("XDG_SESSION_TYPE", "") or "unknown"
             log.error(
                 "No text-injection tool found (session=%s). Install one:\n"
-                "    Wayland: sudo apt install ydotool   (and run the ydotoold daemon)\n"
-                "             or: sudo apt install wtype\n"
-                "    X11:     sudo apt install xdotool\n"
+                "    Wayland (GNOME/KDE): ydotool + ydotoold (1.x)\n"
+                "    Wayland (wlroots):   sudo apt install wtype\n"
+                "    X11:                 sudo apt install xdotool\n"
                 "Refusing to start so the PC daemon falls back to clipboard paste.",
                 session)
             sys.exit(2)
-        log.info("Injection tool: %s", tool)
+
+        # KeystrokeInjector picks its Linux backend from XDG_SESSION_TYPE; when
+        # we're driving ydotool (e.g. launched over SSH where session=tty), steer
+        # it to the Wayland branch so it uses ydotool, and point ydotool at the
+        # daemon socket so injection is reliable (no dropped first keystrokes).
+        if chosen == "ydotool":
+            os.environ["XDG_SESSION_TYPE"] = "wayland"
+            sock = ydotool_socket or os.environ.get("YDOTOOL_SOCKET") or "/run/ydotoold.socket"
+            os.environ["YDOTOOL_SOCKET"] = sock
+            if not os.path.exists(sock):
+                log.warning("ydotool socket %s not found — is ydotoold running? "
+                            "Injection may drop the first keystrokes.", sock)
+            else:
+                log.info("ydotool socket: %s", sock)
+        log.info("Injection tool: %s", chosen)
 
         from keystroke_injector import KeystrokeInjector
         self._injector = KeystrokeInjector()
@@ -165,8 +186,15 @@ def main() -> None:
     p.add_argument("--bind", "-b", default="0.0.0.0",
                    help="Interface to listen on (default 0.0.0.0; "
                         "use a Tailscale/VPN IP to restrict exposure)")
+    p.add_argument("--tool", choices=["auto", "ydotool", "wtype", "xdotool"],
+                   default="auto",
+                   help="Injection backend (default auto: prefers ydotool)")
+    p.add_argument("--ydotool-socket", default="",
+                   help="ydotoold socket path (default $YDOTOOL_SOCKET or "
+                        "/run/ydotoold.socket)")
     args = p.parse_args()
-    PasteHelper(bind=args.bind, port=args.port).serve()
+    PasteHelper(bind=args.bind, port=args.port,
+                tool=args.tool, ydotool_socket=args.ydotool_socket).serve()
 
 
 if __name__ == "__main__":

@@ -281,6 +281,10 @@ class TalkFlowDaemon:
         self._lock = threading.Lock()
         self._last_text = ""
         self._last_text_time = 0.0
+        # Where the *current* recording should be delivered: "local" (PC clipboard
+        # paste) or "remote" (the AI5090 helper). Chosen per-trigger at start, so
+        # the PC button and the AI5090 button never clobber each other.
+        self._target = "local"
 
     # ------------------------------------------------------------------
     # Command handling (called from the socket-accept loop)
@@ -291,11 +295,17 @@ class TalkFlowDaemon:
             return self._state
         if command == "ping":
             return "pong"
+        # A "-remote" suffix routes this recording to the AI5090 helper; the bare
+        # form delivers locally on the PC. (e.g. "toggle" vs "toggle-remote")
+        target = "local"
+        if command.endswith("-remote"):
+            target = "remote"
+            command = command[: -len("-remote")]
         if command in ("toggle", "start", "stop"):
-            return self._dispatch(command)
+            return self._dispatch(command, target)
         return f"error: unknown command {command!r}"
 
-    def _dispatch(self, command: str) -> str:
+    def _dispatch(self, command: str, target: str = "local") -> str:
         with self._lock:
             state = self._state
             if command == "toggle":
@@ -304,10 +314,11 @@ class TalkFlowDaemon:
             if command == "start":
                 if state != IDLE:
                     return f"busy: {state}"
+                self._target = target
                 self._state = RECORDING
                 self._audio.start()
                 _beep("start")
-                log.info("⏺  RECORDING — speak now")
+                log.info("⏺  RECORDING (→ %s) — speak now", target)
                 return "recording"
 
             if command == "stop":
@@ -372,18 +383,21 @@ class TalkFlowDaemon:
                 self._state = IDLE
 
     def _deliver(self, text: str) -> bool:
-        """Deliver *text* to the active screen.
+        """Deliver *text* according to the recording's chosen target.
 
-        If a remote paste helper is configured, type it directly on that machine
-        (reliable across DeskFlow).  Fall back to the local clipboard-paste path
-        if the helper is unreachable so delivery still works on the PC screen.
+        target == "remote": type it on the AI5090 via its helper (reliable across
+        DeskFlow), falling back to local clipboard paste if it's unreachable.
+        target == "local": always the PC clipboard-paste path.
         """
-        if self._remote_host:
+        if self._target == "remote" and self._remote_host:
             if _send_remote_paste(self._remote_host, self._remote_port, text):
-                log.info("→  delivered to remote helper %s:%d",
+                log.info("→  delivered to AI5090 helper %s:%d",
                          self._remote_host, self._remote_port)
                 return True
-            log.info("Remote helper unreachable — falling back to local clipboard paste")
+            log.info("AI5090 helper unreachable — falling back to local clipboard paste")
+        elif self._target == "remote":
+            log.warning("Remote target requested but no --remote-paste configured "
+                        "— delivering locally")
         return self._injector.deliver(text)
 
     def _transcribe_groq(self, audio_bytes: bytes, initial_prompt: str = "") -> dict:
@@ -436,13 +450,14 @@ class TalkFlowDaemon:
         print(f"\n{'='*60}")
         print(f"  TalkFlow — Stream Deck daemon ready")
         print(f"  Backend : {'Groq Cloud' if self._backend == 'groq' else self._server_url}")
+        print(f"  PC      : python streamdeck_daemon.py toggle          (local clipboard paste)")
         if self._remote_host:
-            print(f"  Deliver : remote helper {self._remote_host}:{self._remote_port} "
-                  f"(fallback: local clipboard paste)")
+            print(f"  AI5090  : python streamdeck_daemon.py toggle-remote   "
+                  f"(→ helper {self._remote_host}:{self._remote_port}, "
+                  f"fallback local)")
         else:
-            print(f"  Deliver : local clipboard paste (DeskFlow forwarding)")
+            print(f"  AI5090  : (set with: setup --remote-paste HOST:PORT to enable toggle-remote)")
         print(f"  Control : 127.0.0.1:{self._port}")
-        print(f"  Trigger : python streamdeck_daemon.py toggle")
         print(f"  Ctrl+C to quit.")
         print(f"{'='*60}\n")
 
@@ -598,9 +613,11 @@ def main() -> None:
     st.add_argument("--show", action="store_true",
                     help="Print the current saved config and its path, then exit")
 
-    for name, help_text in (("toggle", "Start if idle, stop+transcribe if recording"),
-                            ("start", "Begin recording"),
+    for name, help_text in (("toggle", "Toggle recording; deliver to the PC (local)"),
+                            ("start", "Begin recording; deliver to the PC (local)"),
                             ("stop", "Stop recording and transcribe"),
+                            ("toggle-remote", "Toggle recording; deliver to the AI5090"),
+                            ("start-remote", "Begin recording; deliver to the AI5090"),
                             ("status", "Print daemon state"),
                             ("ping", "Check the daemon is alive")):
         t = sub.add_parser(name, help=help_text)
