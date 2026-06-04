@@ -288,6 +288,29 @@ def check_remote_reachable() -> Check | None:
                      "sudo ufw allow 9879/tcp (if ufw is active).")
 
 
+def check_gpu() -> Check:
+    """Server-side: is an NVIDIA GPU available for faster-whisper (CUDA)?"""
+    if shutil.which("nvidia-smi") is None:
+        return Check("GPU/CUDA", WARN, "no GPU — server will run on CPU, slower",
+                     "For best speed install an NVIDIA GPU + driver, then run the "
+                     "server with WHISPER_DEVICE=cuda. CPU works with "
+                     "WHISPER_DEVICE=cpu WHISPER_COMPUTE=int8.")
+    try:
+        out = subprocess.run(
+            ["nvidia-smi", "--query-gpu=name", "--format=csv,noheader"],
+            capture_output=True, text=True, timeout=8)
+        name = (out.stdout.strip().splitlines() or [""])[0].strip()
+        if out.returncode == 0 and name:
+            return Check("GPU/CUDA", OK, name)
+        return Check("GPU/CUDA", WARN, "no GPU — server will run on CPU, slower",
+                     "nvidia-smi ran but reported no GPU. CPU works with "
+                     "WHISPER_DEVICE=cpu WHISPER_COMPUTE=int8.")
+    except Exception as exc:
+        return Check("GPU/CUDA", WARN,
+                     f"no GPU — server will run on CPU, slower ({exc})",
+                     "CPU works with WHISPER_DEVICE=cpu WHISPER_COMPUTE=int8.")
+
+
 def check_deskflow() -> Check:
     name = {"Windows": "deskflow", "Darwin": "deskflow"}.get(platform.system(), "deskflow")
     found = False
@@ -329,6 +352,7 @@ def run_checks(role: str, mic_level: bool = False, ping_key: bool = False) -> li
         checks += check_injection(role)
         checks.append(check_helper_listening())
     elif role == "server":
+        checks.append(check_gpu())
         checks.append(check_groq_key(ping=ping_key))
     return checks
 
