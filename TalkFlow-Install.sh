@@ -159,11 +159,13 @@ install_system_deps() {
             $PKG_INSTALL python3-venv python3-pip python3-tk
             # Audio
             $PKG_INSTALL libportaudio2 portaudio19-dev
-            # Typing tool
+            # Typing tool + clipboard tool (for paste delivery)
             if [ "$SESSION_TYPE" = "wayland" ]; then
                 $PKG_INSTALL ydotool || $PKG_INSTALL wtype || log_warn "Could not install Wayland typing tool"
+                $PKG_INSTALL wl-clipboard || log_warn "wl-clipboard not installed (needed for clipboard paste on Wayland)"
             else
                 $PKG_INSTALL xdotool
+                $PKG_INSTALL xclip || $PKG_INSTALL xsel || log_warn "xclip/xsel not installed (needed for clipboard paste)"
             fi
             # Tray icon support (optional)
             $PKG_INSTALL libayatana-appindicator3-1 gir1.2-ayatanaappindicator3-0.1 || \
@@ -179,11 +181,13 @@ install_system_deps() {
             $PKG_INSTALL python3-devel python3-pip python3-tkinter
             # Audio
             $PKG_INSTALL portaudio portaudio-devel
-            # Typing tool
+            # Typing tool + clipboard tool (for paste delivery)
             if [ "$SESSION_TYPE" = "wayland" ]; then
                 $PKG_INSTALL ydotool || $PKG_INSTALL wtype || log_warn "Could not install Wayland typing tool"
+                $PKG_INSTALL wl-clipboard || log_warn "wl-clipboard not installed (needed for clipboard paste on Wayland)"
             else
                 $PKG_INSTALL xdotool
+                $PKG_INSTALL xclip || $PKG_INSTALL xsel || log_warn "xclip/xsel not installed (needed for clipboard paste)"
             fi
             # Tray icon support
             $PKG_INSTALL libappindicator-gtk3 || log_warn "AppIndicator not available"
@@ -197,11 +201,13 @@ install_system_deps() {
             $PKG_INSTALL python python-pip tk
             # Audio
             $PKG_INSTALL portaudio
-            # Typing tool
+            # Typing tool + clipboard tool (for paste delivery)
             if [ "$SESSION_TYPE" = "wayland" ]; then
                 $PKG_INSTALL ydotool || $PKG_INSTALL wtype || log_warn "Could not install Wayland typing tool"
+                $PKG_INSTALL wl-clipboard || log_warn "wl-clipboard not installed (needed for clipboard paste on Wayland)"
             else
                 $PKG_INSTALL xdotool
+                $PKG_INSTALL xclip || $PKG_INSTALL xsel || log_warn "xclip/xsel not installed (needed for clipboard paste)"
             fi
             # Tray icon support
             $PKG_INSTALL libappindicator-gtk3 || log_warn "AppIndicator not available"
@@ -215,8 +221,9 @@ install_system_deps() {
             $PKG_INSTALL python3-devel python3-pip python3-tk
             # Audio
             $PKG_INSTALL portaudio portaudio-devel
-            # Typing tool
+            # Typing tool + clipboard tool
             $PKG_INSTALL xdotool
+            $PKG_INSTALL xclip || $PKG_INSTALL xsel || log_warn "xclip/xsel not installed (needed for clipboard paste)"
             # Tray icon support
             $PKG_INSTALL typelib-1_0-AppIndicator3-0_1 || log_warn "AppIndicator not available"
             ;;
@@ -260,12 +267,45 @@ install_files() {
     $PYTHON_CMD -m venv "$VENV_DIR"
     log_success "Virtual environment created"
 
-    # Install Python dependencies
+    # Sanity check: the DeskFlow delivery module must be present.
+    if [ ! -f "$INSTALL_DIR/clipboard_injector.py" ]; then
+        log_error "clipboard_injector.py missing — source tree is incomplete."
+        exit 1
+    fi
+
+    # Install Python dependencies (from requirements.txt so the list never drifts)
     log_info "Installing Python packages (this may take a minute)..."
     "$VENV_DIR/bin/pip" install --upgrade pip wheel
-    "$VENV_DIR/bin/pip" install websockets pynput sounddevice numpy pystray Pillow
+    if [ -f "$INSTALL_DIR/requirements.txt" ]; then
+        "$VENV_DIR/bin/pip" install -r "$INSTALL_DIR/requirements.txt"
+    else
+        "$VENV_DIR/bin/pip" install websockets pynput sounddevice numpy pyperclip pystray Pillow
+    fi
 
     log_success "Python packages installed"
+
+    # Default config (only if not already present). Defaults to DeskFlow paste
+    # delivery, since TalkFlow is built to pair with DeskFlow.
+    if [ ! -f "$INSTALL_DIR/config.json" ]; then
+        local server="${TALKFLOW_SERVER:-YOUR_SERVER:9876}"
+        cat > "$INSTALL_DIR/config.json" << CONFIG_EOF
+{
+  "backend": "groq",
+  "groq_api_key": "",
+  "server": "$server",
+  "hotkey": "f9",
+  "mic_device": null,
+  "mic_device_name": "System Default",
+  "delivery_mode": "deskflow_paste",
+  "paste_sync_delay_ms": 250,
+  "paste_restore_delay_ms": 700,
+  "minimize_to_tray": true,
+  "play_sounds": true,
+  "auto_start_on_launch": false
+}
+CONFIG_EOF
+        log_success "Wrote config.json (delivery_mode = deskflow_paste)"
+    fi
 }
 
 # ============================================================================
@@ -378,7 +418,7 @@ verify_installation() {
     fi
 
     # Check key files
-    for file in gui.py keystroke_injector.py hotkey_listener.py audio_capture.py; do
+    for file in gui.py keystroke_injector.py hotkey_listener.py audio_capture.py clipboard_injector.py; do
         if [ ! -f "$INSTALL_DIR/$file" ]; then
             log_error "Missing file: $file"
             ((errors++))
@@ -400,7 +440,7 @@ verify_installation() {
 
     # Test Python imports
     log_info "Testing Python imports..."
-    if "$VENV_DIR/bin/python" -c "import sounddevice, websockets, pynput, numpy" 2>/dev/null; then
+    if "$VENV_DIR/bin/python" -c "import sounddevice, websockets, pynput, numpy, pyperclip" 2>/dev/null; then
         log_success "Python packages OK"
     else
         log_error "Some Python packages failed to import"

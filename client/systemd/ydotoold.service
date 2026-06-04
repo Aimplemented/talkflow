@@ -1,0 +1,14 @@
+[Unit]
+# Persistent virtual-input daemon (ydotool 1.x) for the TalkFlow paste helper.
+# Runs as root so it can open /dev/uinput; the 0666 socket lets your normal
+# user (and the helper) drive it without sudo. Install: see install-ai5090-helper.sh
+Description=ydotoold — virtual input daemon for TalkFlow
+After=multi-user.target
+
+[Service]
+ExecStart=/usr/local/bin/ydotoold --socket-path=/run/ydotoold.socket --socket-perm=0666
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

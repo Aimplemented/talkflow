@@ -82,9 +82,31 @@ Source: "assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion recursesubdirs
 ; Config file template (optional)
 ; Source: "config.json.template"; DestDir: "{app}"; DestName: "config.json"; Flags: onlyifdoesntexist
 
+; --- Stream Deck client (push-to-talk daemon + setup wizard) ---------------
+; The .py modules the daemon imports, the client deps, the service installer,
+; the guided wizard, and the two silent Stream Deck launchers. Listed explicitly
+; so the package ships exactly what the wizard orchestrates.
+Source: "streamdeck_daemon.py";            DestDir: "{app}"; Flags: ignoreversion
+Source: "doctor.py";                       DestDir: "{app}"; Flags: ignoreversion
+Source: "paste_helper.py";                 DestDir: "{app}"; Flags: ignoreversion
+Source: "audio_capture.py";                DestDir: "{app}"; Flags: ignoreversion
+Source: "clipboard_injector.py";           DestDir: "{app}"; Flags: ignoreversion
+Source: "keystroke_injector.py";           DestDir: "{app}"; Flags: ignoreversion
+Source: "text_processor.py";               DestDir: "{app}"; Flags: ignoreversion
+Source: "groq_transcribe.py";              DestDir: "{app}"; Flags: ignoreversion
+Source: "network_client.py";               DestDir: "{app}"; Flags: ignoreversion
+Source: "requirements.txt";                DestDir: "{app}"; Flags: ignoreversion
+Source: "install-streamdeck-service.ps1";  DestDir: "{app}"; Flags: ignoreversion
+Source: "setup-wizard.ps1";                DestDir: "{app}"; Flags: ignoreversion
+Source: "toggle.vbs";                      DestDir: "{app}"; Flags: ignoreversion
+Source: "toggle-remote.vbs";               DestDir: "{app}"; Flags: ignoreversion
+
 [Icons]
 ; Start Menu shortcut
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Comment: "{#MyAppDescription}"
+
+; Start Menu shortcut for the guided Stream Deck client setup wizard.
+Name: "{autoprograms}\{#MyAppName} Setup"; Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\setup-wizard.ps1"""; WorkingDir: "{app}"; Comment: "Guided setup for TalkFlow Stream Deck voice dictation"
 
 ; Desktop shortcut (optional task)
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon; Comment: "{#MyAppDescription}"
@@ -100,6 +122,11 @@ Root: HKCU; Subkey: "Software\{#MyAppPublisher}\{#MyAppName}"; ValueType: string
 [Run]
 ; Option to launch app after installation
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+
+; Option to run the guided Stream Deck client setup wizard after installation.
+; Unchecked by default so the GUI-only user isn't forced into the console wizard;
+; runs in its own PowerShell window (no nowait — let the user follow the prompts).
+Filename: "powershell.exe"; Parameters: "-ExecutionPolicy Bypass -File ""{app}\setup-wizard.ps1"""; WorkingDir: "{app}"; Description: "Run the TalkFlow Stream Deck setup wizard now"; Flags: postinstall skipifsilent unchecked
 
 [UninstallRun]
 ; Clean shutdown before uninstall (optional)

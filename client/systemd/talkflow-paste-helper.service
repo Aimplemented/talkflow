@@ -1,0 +1,17 @@
+# TalkFlow remote paste helper — types dictation from the PC into the focused
+# window on this machine (the AI5090). Runs as a *user* service so it starts at
+# login. It uses ydotool via the ydotoold socket, so it needs no graphical
+# environment of its own. Install: see install-ai5090-helper.sh
+[Unit]
+Description=TalkFlow remote paste helper
+After=ydotoold.service graphical-session.target
+Wants=ydotoold.service
+
+[Service]
+Environment=YDOTOOL_SOCKET=/run/ydotoold.socket
+ExecStart=/usr/bin/python3 %h/talkflow/client/paste_helper.py --port 9879
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=default.target

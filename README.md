@@ -84,8 +84,9 @@ Hold your hotkey, speak, release — transcribed text appears wherever your curs
 | Component | Location | Platform | Description |
 |-----------|----------|----------|-------------|
 | **Server** | `server/` | Linux + Docker | Faster-Whisper transcription (GPU) |
-| **Client GUI** | `client/gui.py` | Windows/macOS/Linux | Full-featured GUI with system tray |
+| **Client GUI** | `client/gui.py` | Windows/macOS/Linux | GUI with Settings + Dashboard tabs and system tray |
 | **Client CLI** | `client/client.py` | All platforms | Command-line interface |
+| **Clipboard delivery** | `client/clipboard_injector.py` | Windows/macOS/Linux | DeskFlow paste delivery (copy → sync → paste → restore) |
 | **Installer Scripts** | `TalkFlow-Install.*` | Windows | Automated Python environment setup |
 | **Build System** | `client/build_installer.py` | Windows | PyInstaller + Inno Setup |
 
@@ -233,15 +234,26 @@ python3 gui.py
 
 ```json
 {
+  "backend": "groq",
   "server": "192.168.1.100:9876",
   "hotkey": "f9",
   "mic_device": null,
   "mic_device_name": "System Default",
+  "delivery_mode": "local",
+  "paste_sync_delay_ms": 250,
+  "paste_restore_delay_ms": 700,
   "minimize_to_tray": true,
   "play_sounds": true,
   "auto_start_on_launch": false
 }
 ```
+
+`delivery_mode` controls where the transcript lands:
+
+| Value | Behavior |
+|-------|----------|
+| `local` | Type the text at the cursor on the machine running TalkFlow (single-machine use). |
+| `deskflow_paste` | Copy the text and paste it, so **DeskFlow** forwards it to whichever screen currently has the cursor. See [DeskFlow Integration](#deskflow-integration). |
 
 ### Hotkey Options
 
@@ -256,6 +268,217 @@ TalkFlow supports any key combination:
 | Ctrl+Alt+V | `ctrl+alt+v` | Voice-themed shortcut |
 
 Use the **Record Hotkey** button in the GUI to capture any key combination.
+
+---
+
+## DeskFlow Integration
+
+TalkFlow is designed to pair with [DeskFlow](https://github.com/deskflow/deskflow)
+(the open-source software KVM, formerly Synergy). The goal: **one keyboard, one
+mouse, one microphone** on your main machine, but dictation that lands on
+*whichever screen your cursor is currently on*.
+
+### How it works
+
+Run TalkFlow on your **DeskFlow server** — the machine that physically has the
+keyboard, mouse, and microphone (the "primary"). Set delivery mode to
+**DeskFlow** (`deskflow_paste`). Then:
+
+1. You hold the hotkey and speak. Audio is captured on the server and
+   transcribed (Groq or your GPU server).
+2. TalkFlow copies the transcript to the clipboard. DeskFlow **syncs the
+   clipboard** to the screen your cursor is on.
+3. TalkFlow sends a paste keystroke (Ctrl+V). DeskFlow's server-side keyboard
+   hook **forwards injected keystrokes from the primary**, so the paste is
+   delivered to the active remote screen — and the text appears there.
+
+This is the same clipboard-paste technique used by tools like Wispr Flow,
+combined with DeskFlow's built-in clipboard sync and input forwarding. No extra
+agent is required on the client machines — DeskFlow does the routing.
+
+```
+   ┌─────────────────────────── DeskFlow PRIMARY (your PC) ──────────────────────────┐
+   │  keyboard + mouse + mic                                                          │
+   │  ┌──────────┐   hold hotkey    ┌───────────┐   transcript    ┌───────────────┐  │
+   │  │  TalkFlow│ ───────────────▶ │ transcribe│ ──────────────▶ │ clipboard +   │  │
+   │  │  (server)│                  │(Groq/GPU) │                 │ paste (Ctrl+V)│  │
+   │  └──────────┘                  └───────────┘                 └──────┬────────┘  │
+   └─────────────────────────────────────────────────────────────────────┼──────────┘
+                                                                          │ DeskFlow
+                                  clipboard sync + forwarded paste ───────┤ forwards to
+                                                                          ▼ active screen
+                          ┌─────────────────┐               ┌─────────────────┐
+                          │   Mac Mini      │      or       │  Ubuntu box     │
+                          │ (DeskFlow client)│              │(DeskFlow client)│
+                          │  text pasted ✓  │               │  text pasted ✓  │
+                          └─────────────────┘               └─────────────────┘
+```
+
+### Setup checklist
+
+1. **Install + run TalkFlow on the DeskFlow primary** (the machine with the
+   mic/keyboard/mouse). On the other screens you only need DeskFlow running as a
+   client — no TalkFlow needed.
+2. In TalkFlow's **Settings → Delivery**, choose **DeskFlow — paste to whichever
+   screen has the cursor**.
+3. Make sure DeskFlow's **clipboard sharing is enabled** (it is by default).
+4. **Pick a bare function-key hotkey (F8 / F9).** Because the primary forwards
+   all keystrokes to the active screen, a letter-based combo would "leak" to the
+   remote machine while you hold it. A lone function key is harmless there.
+5. **Cross-OS modifier mapping:** if your active screen runs a different OS than
+   the primary (e.g. a Windows primary pasting to macOS), enable DeskFlow's
+   Cmd↔Ctrl mapping for that screen so the forwarded Ctrl+V becomes Cmd+V.
+
+### Tuning the paste timing
+
+If pastes occasionally arrive empty or land before the clipboard has synced,
+increase `paste_sync_delay_ms` (the wait between copy and paste). If your real
+clipboard gets clobbered, increase `paste_restore_delay_ms`.
+
+### Live dashboard
+
+The desktop GUI has a **Dashboard** tab showing live status: service
+running/stopped, active backend, delivery mode, hotkey, a manual server-health
+check, and a feed of recent transcripts with their delivery result.
+
+### Dictating onto another screen — the TalkFlow Agent (recommended)
+
+There's a catch with the clipboard‑paste approach: **when DeskFlow gives another
+screen the keyboard, it forwards your hotkey to that screen and swallows it on
+the primary.** So a hotkey held while you're on a remote screen never reaches
+the PC — nothing records. (If you only ever dictate while the cursor is on the
+primary, clipboard‑paste mode is fine; for true "speak while on the other
+screen" dictation you need the Agent.)
+
+The Agent model catches the hotkey **on the screen that currently has the
+keyboard**, then asks the PC (which has the mic) to record:
+
+```
+  Agent (Ubuntu / Mac)              Host (PC — has the mic + Whisper/Groq)
+  --------------------              --------------------------------------
+  hold F9      ── start ──▶          record the PC microphone
+  release F9   ── stop  ──▶          stop, transcribe
+               ◀── text ──           return the transcript
+  type it here (local inject)
+```
+
+**On the PC (host):** in the GUI's **Delivery** section, tick **"Host remote
+agents"** and Start — or run it headless:
+
+```bash
+cd client
+python talkflow_host.py            # reads config.json for backend/key/mic; listens on :9877
+```
+
+Make sure your firewall allows inbound TCP on the host port (9877). Note the
+PC's IP (LAN or Tailscale).
+
+**On each remote screen (Ubuntu "AI5090", Mac Mini):** install the small client
+and run the agent, pointing it at the PC:
+
+```bash
+# one-time: Python deps + (Linux) a typing tool
+pip install websockets pynput
+sudo apt install xdotool          # Linux/X11 only; macOS needs no extra tool
+
+cd client
+python talkflow_agent.py --host <PC_IP>:9877 --hotkey f9
+```
+
+Now, while controlling that screen, hold F9, speak, release — the text is typed
+into the focused app **on that screen**. Because each agent injects locally,
+there's no Ctrl‑vs‑Cmd problem and no clipboard juggling.
+
+Notes:
+- Use a LAN IP if the machines share a network, or a **Tailscale** IP to dictate
+  across networks.
+- On Linux the agent's global hotkey works best under **X11**; Wayland restricts
+  global key capture.
+- Only the agent that started a recording receives its transcript, so multiple
+  screens never type over each other.
+
+### Dictating onto a Wayland screen — the Stream Deck command trigger
+
+On modern Wayland desktops (GNOME 46+, e.g. Ubuntu 25.10) DeskFlow injects
+forwarded input through **libei / the RemoteDesktop portal**. By design those
+events are delivered straight to the focused app and are **invisible to evdev,
+pynput, and global shortcuts** — so the Agent above can't catch a hotkey on a
+Wayland client, and neither can anything else. There is no DeskFlow setting to
+change this; libei is the only Wayland injection path it has.
+
+The fix is to trigger recording with something that is **not a keystroke at
+all**. A **Stream Deck** (or any programmable macropad) fires a *command* over
+USB‑HID through its own software, so it never enters the keyboard event stream
+DeskFlow hooks — it works no matter which screen the cursor is on. Everything
+runs on the PC; the transcript is delivered with the same clipboard‑paste path,
+landing wherever your cursor is.
+
+Because a Stream Deck button runs a command that returns immediately (it can't
+*hold* a recording open across two presses), TalkFlow splits into a small
+**daemon** that owns the recording state and a **trigger** the button fires.
+
+**On the PC (with the mic), run the daemon once** (e.g. at login):
+
+```bash
+cd client
+python streamdeck_daemon.py daemon --backend groq --groq-key gsk_xxx
+# or self-hosted:  python streamdeck_daemon.py daemon --backend server --server <PC_IP>:9876
+```
+
+**Point a Stream Deck button** (System → Open, or a "Run command" plugin) at one
+of these. A single toggle button is the simplest:
+
+```bash
+python streamdeck_daemon.py toggle      # press = start, press again = stop + transcribe
+```
+
+Prefer push‑to‑talk? Use a button's separate key‑down / key‑up actions:
+
+```bash
+python streamdeck_daemon.py start        # on key-down
+python streamdeck_daemon.py stop         # on key-up
+```
+
+On Windows, use `pythonw.exe` for the trigger to avoid a console window flash.
+The trigger needs only the Python standard library, so it works even on a
+machine without the audio packages installed.
+
+Notes:
+- The daemon listens on `127.0.0.1:9878` (override with `--port`); the trigger
+  connects there and exits in milliseconds.
+- `python streamdeck_daemon.py status` / `ping` report daemon state — handy for a
+  Stream Deck button that shows whether it's recording.
+- Same clipboard‑paste delivery as DeskFlow mode, so the cross‑OS Cmd↔Ctrl
+  mapping and `--sync-delay` / `--restore-delay` tuning notes above still apply.
+
+#### Auto‑start the daemon on Windows
+
+So the daemon is always running when you sit down, register it as a hidden
+logon task (runs via `pythonw.exe`, no console window):
+
+```powershell
+cd client
+powershell -ExecutionPolicy Bypass -File install-streamdeck-service.ps1 -GroqKey gsk_xxx
+# self-hosted instead:  -Backend server -Server <PC_IP>:9876
+```
+
+This stores your key as a per‑user `GROQ_API_KEY`, creates a Scheduled Task
+("TalkFlow Stream Deck Daemon") that starts at logon and restarts on failure,
+launches it immediately, and logs to `%LOCALAPPDATA%\TalkFlow\daemon.log`.
+
+Then set your **Stream Deck** button (System → Open) — point App/File at the
+silent launcher (the Open action can't pass arguments, so use the `.vbs`, not
+`streamdeck_daemon.py`):
+
+```
+<path>\client\toggle.vbs
+```
+
+To remove it:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install-streamdeck-service.ps1 -Uninstall
+```
 
 ---
 

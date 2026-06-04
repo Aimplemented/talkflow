@@ -17,3 +17,7 @@ Thumbs.db
 
 # Docker
 *.log
+
+# TalkFlow runtime config (per-machine; may hold API keys)
+client/config.json
+client/talkflow_config.json
